@@ -1,0 +1,11 @@
+gigachat==0.2.4a1
+python-dateutil>=2.9,<3
+python-dotenv>=1,<2
+tzdata>=2025.2
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+# /api/transcribe: загрузка аудио (multipart/form-data) и локальный Whisper
+python-multipart>=0.0.18
+faster-whisper>=1.2,<2
+# Локальные эмбеддинги для смыслового поиска (ONNX, без torch)
+fastembed>=0.5,<1

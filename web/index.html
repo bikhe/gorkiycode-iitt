@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Голосовой ассистент</title>
+<style>
+  :root { --bg:#f6f6f4; --card:#fff; --ink:#1d1d1f; --muted:#6b6b70; --line:#e3e3e0; --accent:#2f5bea; --user:#e8eefc; --err:#c0392b; --ok:#1e8e5a; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141416; --card:#1d1d20; --ink:#ececee; --muted:#9a9aa1; --line:#2c2c31; --accent:#7c9cff; --user:#23304f; --err:#ff7b6b; --ok:#5fd39b; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width:720px; margin:0 auto; padding:24px 16px 160px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
+  h1 { font-size:20px; margin:0; }
+  .tools { display:flex; gap:12px; align-items:center; font-size:14px; color:var(--muted); }
+  .tools button { background:none; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:4px 10px; cursor:pointer; font:inherit; }
+  #log { display:flex; flex-direction:column; gap:10px; }
+  .msg { max-width:85%; padding:10px 14px; border-radius:14px; background:var(--card); border:1px solid var(--line); white-space:pre-wrap; }
+  .msg.user { align-self:flex-end; background:var(--user); border-color:transparent; }
+  .msg.error { color:var(--err); }
+  .msg small { display:block; color:var(--muted); font-size:12px; margin-top:4px; }
+  .hints { display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 20px; }
+  .hints button { border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:999px; padding:6px 12px; cursor:pointer; font:inherit; font-size:14px; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:var(--bg); border-top:1px solid var(--line); }
+  .bar-inner { max-width:720px; margin:0 auto; padding:12px 16px 16px; }
+  #interim { min-height:22px; color:var(--muted); font-style:italic; margin-bottom:8px; }
+  #confirm { display:none; gap:8px; margin-bottom:8px; }
+  #confirm button { flex:1; padding:10px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--ink); font:inherit; cursor:pointer; }
+  form { display:flex; gap:8px; align-items:center; }
+  #text { flex:1; min-width:0; padding:12px 14px; border-radius:12px; border:1px solid var(--line); background:var(--card); color:var(--ink); font:inherit; }
+  #mic { width:52px; height:52px; border-radius:50%; border:none; background:var(--accent); color:#fff; cursor:pointer; flex:none; display:grid; place-items:center; }
+  #mic svg { width:24px; height:24px; }
+  #mic[data-state="listening"] { background:var(--err); animation:pulse 1.2s infinite; }
+  #mic[data-state="thinking"], #mic[data-state="speaking"] { opacity:.6; }
+  #mic:disabled { opacity:.3; cursor:not-allowed; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(192,57,43,.5)} 100%{box-shadow:0 0 0 14px rgba(192,57,43,0)} }
+  #status { font-size:13px; color:var(--muted); margin-top:6px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Голосовой ассистент</h1>
+    <div class="tools">
+      <label><input type="checkbox" id="speak" checked> озвучивать</label>
+      <button id="reset" type="button">Новый диалог</button>
+    </div>
+  </header>
+
+  <div class="hints" id="hints">
+    <button>Напомни мне завтра в 10 утра позвонить Ивану</button>
+    <button>Добавь встречу с командой завтра в 15:00</button>
+    <button>Поставь встречу с Иваном завтра</button>
+    <button>Что у меня на этой неделе?</button>
+    <button>Найди задачу про отчёт</button>
+  </div>
+
+  <div id="log" aria-live="polite"></div>
+</main>
+
+<div class="bar">
+  <div class="bar-inner">
+    <div id="interim"></div>
+    <div id="confirm"><button data-answer="да">Да</button><button data-answer="нет">Нет</button></div>
+    <form id="form">
+      <input id="text" autocomplete="off" placeholder="Скажи или напиши, например: что у меня завтра?">
+      <button id="mic" type="button" title="Говорить (пробел)" aria-label="Говорить">
+        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
+      </button>
+    </form>
+    <div id="status"></div>
+  </div>
+</div>
+
+<script type="module">
+import { VoiceAssistant, sttSupported } from './voice.js';
+
+const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const STATUS = { idle: '', listening: 'Слушаю…', thinking: 'Думаю…', speaking: 'Отвечаю…' };
+
+function add(text, cls, note) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + (cls || '');
+  div.textContent = text;
+  if (note) { const s = document.createElement('small'); s.textContent = note; div.append(s); }
+  $('log').append(div);
+  div.scrollIntoView({ block: 'end', behavior: 'smooth' });
+}
+
+const assistant = new VoiceAssistant({
+  apiUrl: params.get('api') || 'http://127.0.0.1:8765/api/assistant',
+  userId: params.get('user') || 'demo',
+  speak: $('speak').checked,
+  localStt: params.get('stt') === 'local',
+  on: {
+    state: s => { $('mic').dataset.state = s; $('status').textContent = STATUS[s] ?? ''; if (s !== 'listening') $('interim').textContent = ''; },
+    interim: t => { $('interim').textContent = t; },
+    user: (t, source) => { add(t, 'user', source === 'voice' ? 'голосом' : ''); $('confirm').style.display = 'none'; },
+    reply: r => {
+      add(r.display_text || '…', r.status === 'error' ? 'error' : '');
+      $('confirm').style.display = r.status === 'confirmation_required' ? 'flex' : 'none';
+    },
+    error: m => { add(m, 'error'); $('status').textContent = ''; },
+  },
+});
+
+if (!sttSupported() && params.get('stt') !== 'local') {
+  $('mic').disabled = true;
+  $('status').textContent = 'Голосовой ввод в этом браузере недоступен — пиши текстом (голос работает в Chrome, Edge, Яндекс Браузере).';
+}
+
+$('mic').onclick = () => assistant.listen();
+$('form').onsubmit = e => { e.preventDefault(); const t = $('text').value; $('text').value = ''; assistant.send(t); };
+$('speak').onchange = e => { assistant.speakEnabled = e.target.checked; if (!e.target.checked) assistant.stopSpeaking(); };
+$('reset').onclick = () => { assistant.newSession(); $('log').innerHTML = ''; $('confirm').style.display = 'none'; };
+$('hints').onclick = e => { if (e.target.tagName === 'BUTTON') assistant.send(e.target.textContent); };
+$('confirm').onclick = e => { const a = e.target.dataset.answer; if (a) assistant.send(a); };
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && document.activeElement !== $('text') && !e.repeat) { e.preventDefault(); assistant.listen(); }
+});
+</script>
+</body>
+</html>

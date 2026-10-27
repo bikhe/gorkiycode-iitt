@@ -1,0 +1,8 @@
+AI-часть ассистента готова отдельным модулем assistant_ai/.
+GigaChat Function Calling определяет намерение, а Python отдельно проверяет дату/время, ведет контекст, управляет задачами, встречами, повторениями, поиском, безопасными изменениями и конфликтами.
+
+Для голоса не надо трогать LLM-код: текст из Web Speech API отправляется в POST http://127.0.0.1:8765/api/assistant, из JSON берутся display_text и speech_text; уточнения отправляются с тем же session_id.
+
+В архиве есть server.py, voice_example.js, TO_WAKIZAHE.md и подробный INTEGRATION.md. Запуск локально: pip install -r requirements.txt; python server.py (с рабочим .env для GigaChat); для офлайн-диагностики python server.py --offline.
+
+Автотесты: python -m unittest discover -s tests -v. Есть локальная SQLite, чтобы данные сохранялись между перезапусками. Для итогового Django рекомендуется заменить хранилище на CrudPort/ORM. Ключи, сертификаты и .env в архив не входят. Настоящая доставка push-напоминаний в назначенное время — отдельная функция сервера, не часть LLM.

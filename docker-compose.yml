@@ -1,0 +1,33 @@
+# Запуск на VPS:  DOMAIN=assistant.example.ru docker compose up -d --build
+# DNS-запись домена должна указывать на сервер, порты 80 и 443 открыты.
+name: assistant-ai  # явно: имя папки может быть не латиницей
+
+services:
+  app:
+    build: .
+    env_file: .env
+    environment:
+      APP_DB_PATH: /data/assistant_data.sqlite3
+      APP_CORS_ORIGIN: https://${DOMAIN:?укажите DOMAIN}
+      APP_COOKIE_SECURE: "1"
+    volumes:
+      - app-data:/data          # база SQLite, кэш моделей Whisper и эмбеддингов
+    expose:
+      - "8765"
+    restart: unless-stopped
+
+  caddy:                        # HTTPS: без него браузер не даст микрофон
+    image: caddy:2
+    command: caddy reverse-proxy --from ${DOMAIN} --to app:8765
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data        # сертификаты Let's Encrypt
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  app-data:
+  caddy-data:
