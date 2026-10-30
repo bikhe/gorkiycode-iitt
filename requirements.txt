@@ -7,5 +7,8 @@ uvicorn>=0.30,<1
 # /api/transcribe: загрузка аудио (multipart/form-data) и локальный Whisper
 python-multipart>=0.0.18
 faster-whisper>=1.2,<2
+# PyAV 19 не принимает параметр metadata_errors, который передаёт faster-whisper 1.2:
+# распознавание падает с TypeError на каждой записи. Проверена 16.1.
+av>=11,<17
 # Локальные эмбеддинги для смыслового поиска (ONNX, без torch)
 fastembed>=0.5,<1

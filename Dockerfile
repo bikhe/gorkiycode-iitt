@@ -23,6 +23,9 @@ USER app
 VOLUME /data
 EXPOSE 8765
 
+# Docker и Caddy узнают, что сервер поднялся (модели качаются в фоне и не мешают).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/health',timeout=4).status==200 else 1)"
+
 # Один процесс: SQLite и блокировки пользователей живут в памяти процесса.
 CMD ["uvicorn", "fastapi_server:app", "--host", "0.0.0.0", "--port", "8765", \
      "--proxy-headers", "--forwarded-allow-ips", "*", "--workers", "1"]

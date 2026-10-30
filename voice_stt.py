@@ -1,6 +1,11 @@
 
-"""Локальное распознавание русского голоса через Faster Whisper."""
+"""Локальное распознавание русского голоса через Faster Whisper.
 
+Работает без интернета: модель скачивается один раз (при первом старте
+сервера) и дальше грузится из локального кэша Hugging Face.
+"""
+
+import logging
 import os
 import tempfile
 from functools import lru_cache
@@ -12,21 +17,46 @@ from starlette.concurrency import run_in_threadpool
 
 import auth
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 model_lock = Lock()
 MAX_AUDIO = 5 * 1024 * 1024
+
+# Подсказка Whisper со словарём команд: без неё «Напомни» часто
+# распознаётся как «Напомним». Переопределяется APP_STT_PROMPT.
+DEFAULT_PROMPT = (
+    "Напомни мне, поставь задачу, добавь встречу, что у меня сегодня, "
+    "найди, перенеси, удали. Встреча в 15:00."
+)
+
+
+def stt_provider() -> str:
+    """local — Whisper на сервере (работает офлайн), browser — Web Speech API браузера."""
+    return os.getenv("APP_STT_PROVIDER", "local").strip().lower()
 
 
 @lru_cache(maxsize=1)
 def get_model():
     from faster_whisper import WhisperModel
 
-    return WhisperModel(
-        os.getenv("APP_STT_MODEL", "base"),
-        device="cpu",
-        compute_type="int8",
-    )
+    name = os.getenv("APP_STT_MODEL", "base")
+    options = {"device": "cpu", "compute_type": "int8"}
+    try:
+        # Сначала из кэша, без обращения к сети: так работает без интернета.
+        return WhisperModel(name, local_files_only=True, **options)
+    except Exception:
+        log.info("Модель Whisper %s не найдена в кэше, скачиваю", name)
+        return WhisperModel(name, **options)
+
+
+def preload():
+    """Скачивает и загружает модель заранее, чтобы первая фраза не ждала."""
+    try:
+        get_model()
+        log.info("Модель Whisper готова")
+    except Exception as exc:
+        log.warning("Модель Whisper не загрузилась: %s", exc)
 
 
 def recognize(audio_bytes: bytes) -> str:
@@ -47,6 +77,7 @@ def recognize(audio_bytes: bytes) -> str:
                 beam_size=5,
                 vad_filter=True,
                 condition_on_previous_text=False,
+                initial_prompt=os.getenv("APP_STT_PROMPT") or DEFAULT_PROMPT,
             )
 
             return " ".join(

@@ -36,7 +36,7 @@ class AssistantTests(unittest.TestCase):
         first=ai.handle_message(list(p)[0]);self.assertEqual(first['status'],'clarification')
         self.assertIn('месяц',first['display_text'])
         second=ai.handle_message('октябрь');self.assertEqual(second['status'],'success')
-        item=second['item'];self.assertEqual(item['type'],'reminder');self.assertEqual(item['title'],'поздравить подругу');self.assertEqual(item['due_at'],'2027-10-05')
+        item=second['item'];self.assertEqual(item['type'],'reminder');self.assertEqual(item['title'],'Поздравить подругу');self.assertEqual(item['due_at'],'2027-10-05')
         self.assertEqual(len(planner.calls),1)
     def test_reminder_quartile_then_15_days(self):
         phrase='Напомни поздравить бабушку с днем рождения через квартиль'

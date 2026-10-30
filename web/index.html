@@ -1,124 +1,359 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" class="no-js">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Голосовой ассистент</title>
-<style>
-  :root { --bg:#f6f6f4; --card:#fff; --ink:#1d1d1f; --muted:#6b6b70; --line:#e3e3e0; --accent:#2f5bea; --user:#e8eefc; --err:#c0392b; --ok:#1e8e5a; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#141416; --card:#1d1d20; --ink:#ececee; --muted:#9a9aa1; --line:#2c2c31; --accent:#7c9cff; --user:#23304f; --err:#ff7b6b; --ok:#5fd39b; } }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  main { max-width:720px; margin:0 auto; padding:24px 16px 160px; }
-  header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:16px; }
-  h1 { font-size:20px; margin:0; }
-  .tools { display:flex; gap:12px; align-items:center; font-size:14px; color:var(--muted); }
-  .tools button { background:none; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:4px 10px; cursor:pointer; font:inherit; }
-  #log { display:flex; flex-direction:column; gap:10px; }
-  .msg { max-width:85%; padding:10px 14px; border-radius:14px; background:var(--card); border:1px solid var(--line); white-space:pre-wrap; }
-  .msg.user { align-self:flex-end; background:var(--user); border-color:transparent; }
-  .msg.error { color:var(--err); }
-  .msg small { display:block; color:var(--muted); font-size:12px; margin-top:4px; }
-  .hints { display:flex; flex-wrap:wrap; gap:8px; margin:8px 0 20px; }
-  .hints button { border:1px solid var(--line); background:var(--card); color:var(--ink); border-radius:999px; padding:6px 12px; cursor:pointer; font:inherit; font-size:14px; }
-  .bar { position:fixed; left:0; right:0; bottom:0; background:var(--bg); border-top:1px solid var(--line); }
-  .bar-inner { max-width:720px; margin:0 auto; padding:12px 16px 16px; }
-  #interim { min-height:22px; color:var(--muted); font-style:italic; margin-bottom:8px; }
-  #confirm { display:none; gap:8px; margin-bottom:8px; }
-  #confirm button { flex:1; padding:10px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--ink); font:inherit; cursor:pointer; }
-  form { display:flex; gap:8px; align-items:center; }
-  #text { flex:1; min-width:0; padding:12px 14px; border-radius:12px; border:1px solid var(--line); background:var(--card); color:var(--ink); font:inherit; }
-  #mic { width:52px; height:52px; border-radius:50%; border:none; background:var(--accent); color:#fff; cursor:pointer; flex:none; display:grid; place-items:center; }
-  #mic svg { width:24px; height:24px; }
-  #mic[data-state="listening"] { background:var(--err); animation:pulse 1.2s infinite; }
-  #mic[data-state="thinking"], #mic[data-state="speaking"] { opacity:.6; }
-  #mic:disabled { opacity:.3; cursor:not-allowed; }
-  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(192,57,43,.5)} 100%{box-shadow:0 0 0 14px rgba(192,57,43,0)} }
-  #status { font-size:13px; color:var(--muted); margin-top:6px; }
-</style>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Gorky AI — голосовой ассистент для задач и встреч</title>
+<meta name="description" content="Gorky AI понимает обычную речь: создаёт задачи, встречи и напоминания, показывает планы на период и находит старые записи по смыслу. Прототип для хакатона GorkyCode 2026.">
+<meta name="theme-color" content="#1a181b">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Gorky AI — планы голосом, без форм и меню">
+<meta property="og:description" content="Голосовой ассистент для задач, встреч и напоминаний. GorkyCode 2026, Нижний Новгород.">
+<meta property="og:image" content="/assets/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geologica:wght@300..700&family=Pixelify+Sans:wght@400..700&display=swap">
+<link rel="stylesheet" href="/assets/base.css">
+<link rel="stylesheet" href="/assets/landing.css">
+<script>document.documentElement.classList.replace('no-js', 'js');</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {"@type": "Question", "name": "Нужен ли интернет?", "acceptedAnswer": {"@type": "Answer", "text": "Распознавание речи работает локально через faster-whisper. Интернет нужен для GigaChat; без него включается режим разбора фраз правилами."}},
+    {"@type": "Question", "name": "Что будет, если ассистент не понял фразу?", "acceptedAnswer": {"@type": "Answer", "text": "Он задаст уточняющий вопрос и ничего не сохранит, пока данных не хватает. Удаление и конфликты встреч требуют подтверждения."}},
+    {"@type": "Question", "name": "Где хранятся данные?", "acceptedAnswer": {"@type": "Answer", "text": "В локальной базе SQLite на сервере, где запущен ассистент. Аудио распознаётся на этом же сервере и не сохраняется."}}
+  ]
+}
+</script>
 </head>
 <body>
-<main>
-  <header>
-    <h1>Голосовой ассистент</h1>
-    <div class="tools">
-      <label><input type="checkbox" id="speak" checked> озвучивать</label>
-      <button id="reset" type="button">Новый диалог</button>
-    </div>
-  </header>
+<a class="skip-link" href="#main">Перейти к содержанию</a>
 
-  <div class="hints" id="hints">
-    <button>Напомни мне завтра в 10 утра позвонить Ивану</button>
-    <button>Добавь встречу с командой завтра в 15:00</button>
-    <button>Поставь встречу с Иваном завтра</button>
-    <button>Что у меня на этой неделе?</button>
-    <button>Найди задачу про отчёт</button>
+<!-- Иконки Phosphor и логотип -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="g-mark" viewBox="0 0 16 16" shape-rendering="crispEdges"><g fill="currentColor"><rect x="5" y="3" width="7" height="2"/><rect x="3" y="5" width="2" height="6"/><rect x="5" y="11" width="6" height="2"/><rect x="8" y="7" width="5" height="2"/><rect x="11" y="9" width="2" height="2"/></g></symbol>
+</svg>
+
+<header class="nav" id="nav">
+  <div class="nav-bar">
+    <a class="logo" href="/" aria-label="Gorky AI, на главную">
+      <span class="logo-mark"><svg aria-hidden="true"><use href="#g-mark"/></svg></span>
+      <span class="logo-name">Gorky AI</span>
+    </a>
+    <nav class="nav-links" aria-label="Разделы">
+      <a href="#scenarios">Сценарии</a>
+      <a href="#how">Как устроено</a>
+      <a href="#limits">Ограничения</a>
+      <a href="#faq">Вопросы</a>
+    </nav>
+    <a class="btn is-sm nav-cta" href="/app/"><span>Открыть ассистента</span></a>
+    <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="navPanel" aria-label="Открыть меню">
+      <i></i><i></i><i></i>
+    </button>
   </div>
+  <div class="nav-panel" id="navPanel" hidden>
+    <nav aria-label="Меню">
+      <a href="#scenarios">Сценарии</a>
+      <a href="#how">Как устроено</a>
+      <a href="#limits">Ограничения</a>
+      <a href="#faq">Вопросы</a>
+      <a href="https://github.com/desquiciadoh/gorkiycode-iitt" rel="noopener">Код на GitHub</a>
+      <a class="btn" href="/app/"><span>Открыть ассистента</span></a>
+    </nav>
+  </div>
+</header>
 
-  <div id="log" aria-live="polite"></div>
+<main id="main">
+
+  <!-- 1. Герой -->
+  <section class="hero" aria-labelledby="heroTitle">
+    <img class="hero-art" src="/assets/skyline.svg" alt="" width="320" height="150" fetchpriority="high">
+    <div class="hero-inner wrap">
+      <p class="hero-kicker px-font">GorkyCode 2026 <span aria-hidden="true">✕</span> Нижний Новгород</p>
+      <h1 id="heroTitle" class="hero-title">Планы голосом,<br>без форм и меню</h1>
+      <p class="hero-tags px-font" aria-label="Что умеет: задачи, встречи, напоминания, поиск">
+        задачи <span aria-hidden="true">/</span> встречи <span aria-hidden="true">/</span> напоминания <span aria-hidden="true">/</span> поиск
+      </p>
+      <p class="hero-sub">Скажите как есть: «напомни завтра в 10 позвонить Ивану». Gorky AI сам поймёт, что это напоминание, поставит дату и время, а если данных не хватит, переспросит.</p>
+      <div class="hero-cta">
+        <a class="btn" href="/app/"><span>Открыть ассистента</span></a>
+        <p class="hero-proof">
+          <span><b>292</b> автотеста</span>
+          <span aria-hidden="true">·</span>
+          <span>речь распознаётся без интернета</span>
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. Живое демо -->
+  <section class="section demo-section" id="demo" aria-labelledby="demoTitle">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="prompt">$ ./gorky <b>--demo</b></p>
+        <h2 id="demoTitle" class="h2">Четыре сценария из ТЗ за минуту</h2>
+        <p class="lead">Так выглядит разговор в ассистенте. Фразы взяты из задания, ответы в том виде, в каком их возвращает сервер.</p>
+      </div>
+
+      <div class="demo px-drop reveal">
+        <div class="px-panel demo-window">
+          <div class="px-titlebar">
+            <span>assistant.log</span>
+            <span class="demo-step" id="demoStep" aria-hidden="true">1 / 4</span>
+          </div>
+          <div class="demo-body">
+            <div class="demo-chat" id="demoChat" aria-live="off"></div>
+            <aside class="demo-records" aria-label="Записи в демо">
+              <p class="demo-records-title px-font">мои_записи <span id="demoCount">0</span></p>
+              <ul id="demoRecords"></ul>
+            </aside>
+          </div>
+          <div class="demo-controls">
+            <div class="demo-progress" aria-hidden="true"><i id="demoBar"></i></div>
+            <button class="btn-ghost" id="demoPause" type="button" aria-pressed="false">
+              <svg class="icon icon-sm" aria-hidden="true"><use href="/assets/icons.svg#i-stop"/></svg><span>Пауза</span>
+            </button>
+          </div>
+        </div>
+      </div>
+      <noscript><p class="lead">Включите JavaScript, чтобы посмотреть демо, или откройте ассистента.</p></noscript>
+    </div>
+  </section>
+
+  <!-- 3. Проблема → решение -->
+  <section class="section" aria-labelledby="diffTitle">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="prompt">$ diff <b>форма.txt голос.txt</b></p>
+        <h2 id="diffTitle" class="h2">Шесть шагов в форме против одной фразы</h2>
+      </div>
+      <div class="diff">
+        <article class="px-panel diff-card reveal">
+          <h3 class="diff-label px-font is-old">Обычный календарь</h3>
+          <ol class="diff-steps">
+            <li>Открыть приложение и найти нужный экран</li>
+            <li>Выбрать тип: задача или событие</li>
+            <li>Ввести название</li>
+            <li>Выбрать дату в календаре</li>
+            <li>Прокрутить барабан со временем</li>
+            <li>Нажать «Сохранить»</li>
+          </ol>
+        </article>
+        <article class="px-panel is-accent diff-card is-new reveal">
+          <h3 class="diff-label px-font">Gorky AI</h3>
+          <p class="diff-quote">«В четверг в 11 у меня встреча с дизайнером»</p>
+          <div class="diff-result">
+            <span class="type-dot" data-type="meeting" aria-hidden="true"></span>
+            <div>
+              <p class="diff-result-title">Встреча с дизайнером</p>
+              <p class="diff-result-meta" id="thursdayLabel">четверг · 11:00 · встреча</p>
+            </div>
+          </div>
+          <p class="diff-note">Тип, дату и время ассистент берёт из фразы. Не хватает данных, задаёт вопрос.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. Сценарии (преимущества) -->
+  <section class="section" id="scenarios" aria-labelledby="scenTitle">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="prompt">$ ls <b>../scenarios</b></p>
+        <h2 id="scenTitle" class="h2">Все обязательные сценарии работают</h2>
+        <p class="lead">Говорить можно своими словами: «что у меня сегодня», «какие планы на сегодня» и «покажи встречи на сегодня» ассистент понимает одинаково.</p>
+      </div>
+
+      <div class="scen-grid">
+        <article class="px-panel scen reveal">
+          <div class="scen-head"><span class="scen-icon" data-type="reminder"><svg class="icon icon-lg" aria-hidden="true"><use href="/assets/icons.svg#i-bell-ringing"/></svg></span><span class="chip">01</span></div>
+          <h3 class="h3">Задачи и напоминания</h3>
+          <p class="scen-text"><b>Срок понимается из речи.</b> «До конца недели», «в пятницу», «через два часа» превращаются в точную дату.</p>
+          <p class="scen-say">«Поставь задачу купить билеты до конца недели»</p>
+        </article>
+        <article class="px-panel scen reveal">
+          <div class="scen-head"><span class="scen-icon" data-type="meeting"><svg class="icon icon-lg" aria-hidden="true"><use href="/assets/icons.svg#i-calendar-dots"/></svg></span><span class="chip">02</span></div>
+          <h3 class="h3">Встречи</h3>
+          <p class="scen-text"><b>Пересечения видны сразу.</b> Если время занято, ассистент назовёт конфликт и спросит, ставить ли всё равно.</p>
+          <p class="scen-say">«Добавь встречу с командой завтра в 15:00»</p>
+        </article>
+        <article class="px-panel scen reveal">
+          <div class="scen-head"><span class="scen-icon" data-type="task"><svg class="icon icon-lg" aria-hidden="true"><use href="/assets/icons.svg#i-list"/></svg></span><span class="chip">03</span></div>
+          <h3 class="h3">Планы на период</h3>
+          <p class="scen-text"><b>День, завтра или неделя.</b> Записи идут по времени, задачи без срока отдельным блоком, повторы раскрыты по датам.</p>
+          <p class="scen-say">«Что запланировано на эту неделю?»</p>
+        </article>
+        <article class="px-panel scen reveal">
+          <div class="scen-head"><span class="scen-icon" data-type="search"><svg class="icon icon-lg" aria-hidden="true"><use href="/assets/icons.svg#i-magnifying-glass"/></svg></span><span class="chip">04</span></div>
+          <h3 class="h3">Поиск по смыслу</h3>
+          <p class="scen-text"><b>Точная формулировка не нужна.</b> По запросу «про презентацию» найдутся «слайды к выступлению»: сначала поиск по словам, затем по смыслу.</p>
+          <p class="scen-say">«Когда у меня была встреча с Иваном?»</p>
+        </article>
+      </div>
+
+      <div class="extras reveal">
+        <p class="extras-title px-font">+ сверх обязательного</p>
+        <ul class="extras-list">
+          <li><svg class="icon icon-sm" aria-hidden="true"><use href="/assets/icons.svg#i-check"/></svg>Уточняющие вопросы</li>
+          <li><svg class="icon icon-sm" aria-hidden="true"><use href="/assets/icons.svg#i-check"/></svg>Контекст: «а перенеси её на завтра»</li>
+          <li><svg class="icon icon-sm" aria-hidden="true"><use href="/assets/icons.svg#i-check"/></svg>Перенос и удаление голосом</li>
+          <li><svg class="icon icon-sm" aria-hidden="true"><use href="/assets/icons.svg#i-check"/></svg>Отметка «выполнено»</li>
+          <li><svg class="icon icon-sm" aria-hidden="true"><use href="/assets/icons.svg#i-check"/></svg>Конфликты встреч</li>
+          <li><svg class="icon icon-sm" aria-hidden="true"><use href="/assets/icons.svg#i-check"/></svg>Повторы по дням недели</li>
+          <li><svg class="icon icon-sm" aria-hidden="true"><use href="/assets/icons.svg#i-check"/></svg>Смысловой поиск</li>
+          <li><svg class="icon icon-sm" aria-hidden="true"><use href="/assets/icons.svg#i-check"/></svg>Несколько пользователей</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. Слоган с подсветкой слов -->
+  <section class="section tagline-section" aria-label="Главная мысль">
+    <div class="wrap">
+      <p class="tagline" id="tagline">Говорите как с человеком.<br>Gorky AI сам поймёт,<br>где задача, где встреча<br>и на когда.</p>
+    </div>
+  </section>
+
+  <!-- 6. Как устроено -->
+  <section class="section" id="how" aria-labelledby="howTitle">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="prompt">$ cat <b>ARCHITECTURE.md</b></p>
+        <h2 id="howTitle" class="h2">Три шага от голоса до записи</h2>
+        <p class="lead">Голос, LLM, логика и хранение разделены. LLM только разбирает фразу в структуру, а даты, конфликты и права проверяет Python.</p>
+      </div>
+
+      <ol class="steps">
+        <li class="px-panel step reveal">
+          <span class="step-num px-font">01</span>
+          <svg class="icon icon-lg step-icon" aria-hidden="true"><use href="/assets/icons.svg#i-waveform"/></svg>
+          <h3 class="h3">Голос в текст</h3>
+          <p>Браузер пишет звук, сервер распознаёт его моделью <code>faster&#8209;whisper</code>. Около трёх секунд на фразу на обычном процессоре, без облака.</p>
+        </li>
+        <li class="px-panel step reveal">
+          <span class="step-num px-font">02</span>
+          <svg class="icon icon-lg step-icon" aria-hidden="true"><use href="/assets/icons.svg#i-lightning"/></svg>
+          <h3 class="h3">Текст в действие</h3>
+          <p>GigaChat через Function Calling выбирает действие и поля. Python проверяет даты, ищет конфликты и решает, нужно ли уточнение.</p>
+        </li>
+        <li class="px-panel step reveal">
+          <span class="step-num px-font">03</span>
+          <svg class="icon icon-lg step-icon" aria-hidden="true"><use href="/assets/icons.svg#i-database"/></svg>
+          <h3 class="h3">Запись и ответ</h3>
+          <p>Запись ложится в SQLite. Ответ приходит в двух видах: текст для экрана и короткая фраза для озвучки.</p>
+        </li>
+      </ol>
+
+      <div class="stack reveal" aria-label="Стек">
+        <span class="chip">FastAPI</span><span class="chip">GigaChat</span><span class="chip">faster&#8209;whisper</span><span class="chip">fastembed · mpnet</span><span class="chip">SQLite</span><span class="chip">Web Speech API</span><span class="chip">Docker + Caddy</span><span class="chip">HTML · CSS · JS без сборки</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7. Цифры и честные ограничения -->
+  <section class="section" id="limits" aria-labelledby="limitsTitle">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="prompt">$ make <b>test</b></p>
+        <h2 id="limitsTitle" class="h2">Проверено тестами, границы названы</h2>
+      </div>
+
+      <div class="stats">
+        <div class="px-panel stat reveal"><p class="stat-num px-font">292</p><p class="stat-label">автотеста на логику, API, даты и поиск</p></div>
+        <div class="px-panel stat reveal"><p class="stat-num px-font">4 / 4</p><p class="stat-label">обязательных сценария из ТЗ</p></div>
+        <div class="px-panel stat reveal"><p class="stat-num px-font">8 / 9</p><p class="stat-label">дополнительных возможностей</p></div>
+        <div class="px-panel stat reveal"><p class="stat-num px-font">3 с</p><p class="stat-label">примерно на распознавание фразы, без интернета</p></div>
+      </div>
+
+      <div class="px-panel limits reveal">
+        <h3 class="h3"><svg class="icon icon-lg" aria-hidden="true"><use href="/assets/icons.svg#i-warning-circle"/></svg>Что пока работает не идеально</h3>
+        <ul>
+          <li>Уменьшительные имена: «Аннушка» не всегда связывается с записью «Анна», поэтому ассистент переспрашивает.</li>
+          <li>Часы от 1 до 12 без «утра» или «вечера» ассистент уточняет, но в редких фразах может ошибиться.</li>
+          <li>Напоминания хранятся, но не приходят, пока сайт закрыт: фоновой доставки ещё нет.</li>
+          <li>Интеграции с внешним календарём нет, это девятая дополнительная возможность из ТЗ.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8. FAQ -->
+  <section class="section" id="faq" aria-labelledby="faqTitle">
+    <div class="wrap faq-wrap">
+      <div class="section-head reveal">
+        <p class="prompt">$ cd <b>../faq</b></p>
+        <h2 id="faqTitle" class="h2">Вопрос / ответ</h2>
+      </div>
+      <div class="faq reveal">
+        <details class="px-panel" open>
+          <summary>Нужен ли интернет?</summary>
+          <p>Распознавание речи работает локально через faster&#8209;whisper, модель скачивается один раз. Интернет нужен для GigaChat. Без него можно включить <code>APP_OFFLINE=1</code>: базовые фразы разбираются правилами.</p>
+        </details>
+        <details class="px-panel">
+          <summary>Что будет, если ассистент не понял фразу?</summary>
+          <p>Он задаст уточняющий вопрос и ничего не сохранит, пока данных не хватает. Например, на «поставь встречу с Иваном завтра» спросит время. Удаление и пересекающиеся встречи требуют ответа «да».</p>
+        </details>
+        <details class="px-panel">
+          <summary>Можно без микрофона?</summary>
+          <p>Да. Любую фразу можно набрать текстом, ответ приходит тот же. Озвучку ответа можно выключить одной кнопкой.</p>
+        </details>
+        <details class="px-panel">
+          <summary>Почему GigaChat?</summary>
+          <p>Хорошо понимает русскую речь и поддерживает вызов функций. Провайдер меняется настройкой: есть OpenAI, DeepSeek, YandexGPT, OpenRouter, Ollama и режим без LLM.</p>
+        </details>
+        <details class="px-panel">
+          <summary>Как устроен поиск по старым записям?</summary>
+          <p>Сначала по словам с учётом форм и синонимов, затем по смыслу через эмбеддинги модели mpnet. Смысловое совпадение показывается, только если оно близко к лучшему, чтобы «презентация» не находила «отчёт».</p>
+        </details>
+        <details class="px-panel" id="faq-data">
+          <summary>Где хранятся данные?</summary>
+          <p>В базе SQLite на сервере, где запущен ассистент. Аудио распознаётся на том же сервере и не сохраняется. Сторонние трекеры и cookie для аналитики на сайте не используются.</p>
+        </details>
+        <details class="px-panel">
+          <summary>Как запустить у себя?</summary>
+          <p>Нужен Python 3.12 или 3.13 и ключ GigaChat. Инструкция в README: установить зависимости, заполнить <code>.env</code>, запустить <code>uvicorn fastapi_server:app</code> и открыть <code>http://127.0.0.1:8765</code>.</p>
+        </details>
+        <details class="px-panel">
+          <summary>Что бы вы улучшили дальше?</summary>
+          <p>Доставку напоминаний через push, связку уменьшительных имён с подтверждением, синхронизацию с внешним календарём и более надёжный разбор времени вроде «в семь» без утра или вечера.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- 9. Финальный призыв -->
+  <section class="section final" aria-labelledby="finalTitle">
+    <img class="final-art" src="/assets/skyline.svg" alt="" width="320" height="150" loading="lazy">
+    <div class="wrap final-inner reveal">
+      <h2 id="finalTitle" class="h2">Готовы проверить&nbsp;голосом?</h2>
+      <p class="lead">Скажите любую фразу из ТЗ или свою. Регистрация не нужна.</p>
+      <a class="btn" href="/app/"><span>Открыть ассистента</span></a>
+      <a class="final-link" href="https://github.com/desquiciadoh/gorkiycode-iitt" rel="noopener">
+        <svg class="icon icon-sm" aria-hidden="true"><use href="/assets/icons.svg#i-github-logo"/></svg>Исходный код на GitHub
+      </a>
+    </div>
+  </section>
 </main>
 
-<div class="bar">
-  <div class="bar-inner">
-    <div id="interim"></div>
-    <div id="confirm"><button data-answer="да">Да</button><button data-answer="нет">Нет</button></div>
-    <form id="form">
-      <input id="text" autocomplete="off" placeholder="Скажи или напиши, например: что у меня завтра?">
-      <button id="mic" type="button" title="Говорить (пробел)" aria-label="Говорить">
-        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z"/></svg>
-      </button>
-    </form>
-    <div id="status"></div>
+<footer class="footer">
+  <div class="wrap footer-inner">
+    <a class="logo" href="/" aria-label="Gorky AI, на главную">
+      <span class="logo-mark"><svg aria-hidden="true"><use href="#g-mark"/></svg></span>
+      <span class="logo-name">Gorky AI</span>
+    </a>
+    <p class="footer-note">Прототип для хакатона GorkyCode 2026. Сделано в Нижнем Новгороде.</p>
+    <nav class="footer-links" aria-label="Ссылки в подвале">
+      <a href="/app/">Ассистент</a>
+      <a href="https://github.com/desquiciadoh/gorkiycode-iitt" rel="noopener">GitHub</a>
+      <a href="#faq-data">Данные и приватность</a>
+    </nav>
   </div>
-</div>
+</footer>
 
-<script type="module">
-import { VoiceAssistant, sttSupported } from './voice.js';
-
-const $ = id => document.getElementById(id);
-const params = new URLSearchParams(location.search);
-const STATUS = { idle: '', listening: 'Слушаю…', thinking: 'Думаю…', speaking: 'Отвечаю…' };
-
-function add(text, cls, note) {
-  const div = document.createElement('div');
-  div.className = 'msg ' + (cls || '');
-  div.textContent = text;
-  if (note) { const s = document.createElement('small'); s.textContent = note; div.append(s); }
-  $('log').append(div);
-  div.scrollIntoView({ block: 'end', behavior: 'smooth' });
-}
-
-const assistant = new VoiceAssistant({
-  apiUrl: params.get('api') || 'http://127.0.0.1:8765/api/assistant',
-  userId: params.get('user') || 'demo',
-  speak: $('speak').checked,
-  localStt: params.get('stt') === 'local',
-  on: {
-    state: s => { $('mic').dataset.state = s; $('status').textContent = STATUS[s] ?? ''; if (s !== 'listening') $('interim').textContent = ''; },
-    interim: t => { $('interim').textContent = t; },
-    user: (t, source) => { add(t, 'user', source === 'voice' ? 'голосом' : ''); $('confirm').style.display = 'none'; },
-    reply: r => {
-      add(r.display_text || '…', r.status === 'error' ? 'error' : '');
-      $('confirm').style.display = r.status === 'confirmation_required' ? 'flex' : 'none';
-    },
-    error: m => { add(m, 'error'); $('status').textContent = ''; },
-  },
-});
-
-if (!sttSupported() && params.get('stt') !== 'local') {
-  $('mic').disabled = true;
-  $('status').textContent = 'Голосовой ввод в этом браузере недоступен — пиши текстом (голос работает в Chrome, Edge, Яндекс Браузере).';
-}
-
-$('mic').onclick = () => assistant.listen();
-$('form').onsubmit = e => { e.preventDefault(); const t = $('text').value; $('text').value = ''; assistant.send(t); };
-$('speak').onchange = e => { assistant.speakEnabled = e.target.checked; if (!e.target.checked) assistant.stopSpeaking(); };
-$('reset').onclick = () => { assistant.newSession(); $('log').innerHTML = ''; $('confirm').style.display = 'none'; };
-$('hints').onclick = e => { if (e.target.tagName === 'BUTTON') assistant.send(e.target.textContent); };
-$('confirm').onclick = e => { const a = e.target.dataset.answer; if (a) assistant.send(a); };
-document.addEventListener('keydown', e => {
-  if (e.code === 'Space' && document.activeElement !== $('text') && !e.repeat) { e.preventDefault(); assistant.listen(); }
-});
-</script>
+<script src="/assets/landing.js" type="module"></script>
 </body>
 </html>
