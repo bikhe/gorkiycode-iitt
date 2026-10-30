@@ -8,8 +8,14 @@ services:
     env_file: .env
     environment:
       APP_DB_PATH: /data/assistant_data.sqlite3
+      # Кэши моделей — в томе: /app не доступна на запись, а .env задаёт локальную папку
+      FASTEMBED_CACHE_PATH: /data/fastembed
+      HF_HOME: /data/hf
       APP_CORS_ORIGIN: https://${DOMAIN:?укажите DOMAIN}
       APP_COOKIE_SECURE: "1"
+      # Демо без регистрации: у каждого браузера свои записи (guest-id).
+      # Чтобы включить вход по логину, задайте APP_AUTH_REQUIRED=1 в .env.
+      APP_AUTH_REQUIRED: ${APP_AUTH_REQUIRED:-0}
     volumes:
       - app-data:/data          # база SQLite, кэш моделей Whisper и эмбеддингов
     expose:
@@ -25,7 +31,8 @@ services:
     volumes:
       - caddy-data:/data        # сертификаты Let's Encrypt
     depends_on:
-      - app
+      app:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

@@ -21,7 +21,7 @@
 ## 2. Архитектура
 
 ```text
-Браузер: web/index.html + web/voice.js
+Браузер: web/app/index.html (ассистент) + web/voice.js; web/index.html — лендинг
     ↓  микрофон (MediaRecorder)             ↘ текстовая команда
 FastAPI: POST /api/transcribe                 POST /api/assistant
     ↓ локальный faster-whisper                    ↓
@@ -72,7 +72,7 @@ GIGACHAT_MODEL=GigaChat-2
 APP_TIMEZONE=Europe/Moscow
 APP_DB_PATH=assistant_data.sqlite3
 APP_CORS_ORIGIN=http://localhost:5500
-APP_AUTH_REQUIRED=1
+APP_AUTH_REQUIRED=0
 GIGACHAT_CA_BUNDLE_FILE=certs/russian_trusted_root_ca_pem.crt
 ```
 
@@ -80,7 +80,8 @@ GIGACHAT_CA_BUNDLE_FILE=certs/russian_trusted_root_ca_pem.crt
 
 Если для TLS требуется публичный корневой сертификат GigaChat, поместите его по пути, указанному в `GIGACHAT_CA_BUNDLE_FILE`, например `certs/russian_trusted_root_ca_pem.crt`. Если системные сертификаты уже подходят, оставьте параметр пустым. **Не отключайте проверку TLS.**
 
-**Безопасность:** настоящий `.env`, токены, рабочая база `*.sqlite3` и её `-wal`/`-shm` файлы не входят в комплект для команды (входят, гпт обманул). Каждый участник создаёт свой `.env`. 
+**Безопасность:** настоящий `.env`, токены, рабочая база `*.sqlite3` и её `-wal`/`-shm` файлы не входят в репозиторий (закрыты в `.gitignore` и `.dockerignore`). Каждый участник создаёт свой `.env`.
+
 ## 5. Запуск — два терминала
 
 **Терминал №1: FastAPI**
@@ -100,14 +101,14 @@ GIGACHAT_CA_BUNDLE_FILE=certs/russian_trusted_root_ca_pem.crt
 Откройте в браузере:
 
 ```text
-http://localhost:5500/?user=demo
+http://localhost:5500/app/?user=demo
 ```
 
 **Распознавание речи работает без интернета.** По умолчанию (`APP_STT_PROVIDER=local`) звук записывается в браузере и распознаётся на сервере локальной моделью faster-whisper; страница узнаёт режим из `GET /api/config`. Модель (`APP_STT_MODEL`, по умолчанию в `.env.example` — `small`, ~0.5 ГБ) скачивается **один раз** в фоне при первом старте сервера — для этого нужен интернет; дальше она грузится из локального кэша без обращения к сети. Распознавание одной фразы на CPU — около 3 с. Параметр `?stt=browser` в адресе включает распознавание браузера (Chrome/Edge отправляют звук на свои серверы, без интернета не работает), `?stt=local` — принудительно серверное. Озвучивание выбирает локальный голос Windows (например, Microsoft Irina) и тоже работает офлайн. Без интернета недоступен только GigaChat: для полностью офлайн-демо поставьте `APP_OFFLINE=1` (разбор фраз правилами).
 
-FastAPI также сам раздаёт страницу: `http://127.0.0.1:8765/` — второй терминал тогда не нужен, а cookie входа работает без настройки CORS.
+FastAPI также сам раздаёт страницы: `http://127.0.0.1:8765/` — лендинг Gorky AI, `http://127.0.0.1:8765/app/` — ассистент. Второй терминал тогда не нужен, а cookie входа работает без настройки CORS.
 
-**Вход.** По умолчанию (`APP_AUTH_REQUIRED=1`) `/api/assistant` и `/api/transcribe` требуют входа через `/api/register` / `/api/login` (см. раздел 7), записи каждого пользователя изолированы. Для отладки фронтенда без формы входа поставьте `APP_AUTH_REQUIRED=0`: тогда `user` из адреса (`user=demo`) — просто метка данных, **не авторизация**.
+**Вход.** Веб-интерфейс Gorky AI работает без регистрации (`APP_AUTH_REQUIRED=0` в `.env.example` и `docker-compose.yml`): браузер при первом визите получает случайный `guest-…` ID и хранит его в `localStorage`, поэтому у каждого посетителя свои записи. `?user=demo` в адресе открывает общий набор записей. Это метка данных, **не авторизация**. Если поставить `APP_AUTH_REQUIRED=1`, `/api/assistant` и `/api/transcribe` потребуют вход через `/api/register` / `/api/login` (см. раздел 7). Формы входа в `web/` нет, её нужно добавить.
 
 **Управление записью:** первое нажатие микрофона начинает запись, повторное — завершает и отправляет аудио на расшифровку. После ответа микрофон не должен автоматически включаться. Если браузерное TTS не работает, снимите галочку «озвучивать» — текстовая часть продолжит работать.
 
@@ -185,7 +186,17 @@ cp .env.example .env                       # заполнить GIGACHAT_CREDENT
 DOMAIN=assistant.example.ru docker compose up -d --build
 ```
 
-Caddy автоматически получает HTTPS-сертификат — без HTTPS браузер не даст доступ к микрофону. Сайт: `https://<DOMAIN>/?stt=local`. База и кэш модели Whisper лежат в томе `app-data` и переживают пересборку. Сервер работает в одном процессе (`--workers 1`): SQLite и блокировки пользователей рассчитаны на это.
+Проверка после запуска:
+
+```bash
+docker compose ps                          # app — healthy, caddy — running
+docker compose logs -f app                 # первая загрузка моделей — несколько минут
+curl https://$DOMAIN/health                # {"ok":true,...}
+```
+
+Обновление: `git pull && DOMAIN=... docker compose up -d --build`. Записи в томе `app-data` сохраняются.
+
+Caddy автоматически получает HTTPS-сертификат — без HTTPS браузер не даст доступ к микрофону. Сайт: `https://<DOMAIN>/` (лендинг), ассистент: `https://<DOMAIN>/app/?stt=local`. База и кэш модели Whisper лежат в томе `app-data` и переживают пересборку. Сервер работает в одном процессе (`--workers 1`): SQLite и блокировки пользователей рассчитаны на это.
 
 Полное описание API для фронтенда (вход, статусы диалога, голос, ошибки, что поменять в `web/`) — в [FRONTEND.md](FRONTEND.md).
 
