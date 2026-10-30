@@ -21,6 +21,8 @@ def fallback_title(text,kind):
     s=re.sub(r'\s+до\s+конца\s+недел\w*\s*$', '',s,flags=re.I)
     s=re.sub(r'\s+\b(?:на|в|к)\s+\d{1,2}:\d{2}\s*$', '',s,flags=re.I)
     s=re.sub(r'^нужно\s+','',s,flags=re.I)
+    # «В четверг в 11 у меня встреча с дизайнером» → «встреча с дизайнером».
+    s=re.sub(r'^у\s+меня\s+(?:будет\s+|есть\s+)?','',s,flags=re.I)
     s=s.strip(' .,!?')[:250]
     if not s or s.casefold() in {'задача','встреча','встречу','напоминание','не знаю','завтра'}:
         return {'meeting':'Встреча','reminder':'Напоминание','task':'Задача'}[kind]

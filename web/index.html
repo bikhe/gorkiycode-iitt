@@ -35,6 +35,30 @@
   #mic:disabled { opacity:.3; cursor:not-allowed; }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(192,57,43,.5)} 100%{box-shadow:0 0 0 14px rgba(192,57,43,0)} }
   #status { font-size:13px; color:var(--muted); margin-top:6px; }
+  /* Панель «Мои записи» */
+  .records { background:var(--card); border:1px solid var(--line); border-radius:14px; margin-bottom:20px; }
+  .records summary { padding:12px 14px; cursor:pointer; font-weight:600; display:flex; justify-content:space-between; gap:8px; }
+  .records summary span { color:var(--muted); font-weight:400; font-size:14px; }
+  .tabs { display:flex; flex-wrap:wrap; gap:6px; padding:0 14px 10px; }
+  .tabs button { border:1px solid var(--line); background:none; color:var(--ink); border-radius:999px; padding:4px 10px; cursor:pointer; font:inherit; font-size:13px; }
+  .tabs button[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:#fff; }
+  #items { list-style:none; margin:0; padding:0 14px 12px; display:flex; flex-direction:column; gap:6px; max-height:50vh; overflow:auto; }
+  #items li { border-left:3px solid var(--line); padding:4px 0 4px 10px; }
+  #items li[data-type="task"] { border-color:var(--accent); }
+  #items li[data-type="meeting"] { border-color:var(--ok); }
+  #items li[data-type="reminder"] { border-color:#d4a017; }
+  #items li.done .title { text-decoration:line-through; color:var(--muted); }
+  #items .meta { color:var(--muted); font-size:13px; }
+  #items .empty { border:none; padding:0; color:var(--muted); font-size:14px; }
+  @media (min-width:1100px) {
+    main { max-width:1100px; display:grid; grid-template-columns:minmax(0,1fr) 340px; column-gap:24px; align-items:start; }
+    main > header { grid-column:1 / -1; }
+    .hints, #log { grid-column:1; }
+    .records { grid-column:2; grid-row:2 / span 3; position:sticky; top:16px; }
+    .records summary { pointer-events:none; }
+    #items { max-height:calc(100vh - 260px); }
+    .bar-inner { max-width:1100px; padding-right:380px; }
+  }
 </style>
 </head>
 <body>
@@ -46,6 +70,17 @@
       <button id="reset" type="button">Новый диалог</button>
     </div>
   </header>
+
+  <details class="records" id="records" open>
+    <summary>Мои записи <span id="itemsCount"></span></summary>
+    <div class="tabs" id="tabs">
+      <button type="button" data-kind="all" aria-pressed="true">Все</button>
+      <button type="button" data-kind="task" aria-pressed="false">Задачи</button>
+      <button type="button" data-kind="meeting" aria-pressed="false">Встречи</button>
+      <button type="button" data-kind="reminder" aria-pressed="false">Напоминания</button>
+    </div>
+    <ul id="items"></ul>
+  </details>
 
   <div class="hints" id="hints">
     <button>Напомни мне завтра в 10 утра позвонить Ивану</button>
@@ -92,7 +127,7 @@ const assistant = new VoiceAssistant({
   apiUrl: params.get('api') || 'http://127.0.0.1:8765/api/assistant',
   userId: params.get('user') || 'demo',
   speak: $('speak').checked,
-  localStt: params.get('stt') === 'local',
+  localStt: params.get('stt') !== 'browser',
   on: {
     state: s => { $('mic').dataset.state = s; $('status').textContent = STATUS[s] ?? ''; if (s !== 'listening') $('interim').textContent = ''; },
     interim: t => { $('interim').textContent = t; },
@@ -100,15 +135,104 @@ const assistant = new VoiceAssistant({
     reply: r => {
       add(r.display_text || '…', r.status === 'error' ? 'error' : '');
       $('confirm').style.display = r.status === 'confirmation_required' ? 'flex' : 'none';
+      if (r.status === 'success') loadItems();
     },
     error: m => { add(m, 'error'); $('status').textContent = ''; },
   },
 });
 
-if (!sttSupported() && params.get('stt') !== 'local') {
-  $('mic').disabled = true;
-  $('status').textContent = 'Голосовой ввод в этом браузере недоступен — пиши текстом (голос работает в Chrome, Edge, Яндекс Браузере).';
+// Распознавание: ?stt=local|browser в адресе, иначе — как настроено на сервере
+// (по умолчанию local: Whisper на сервере, работает без интернета).
+function applyStt(mode) {
+  assistant.localStt = mode === 'local';
+  const canRecord = Boolean(navigator.mediaDevices?.getUserMedia) && typeof MediaRecorder !== 'undefined';
+  const ok = assistant.localStt ? canRecord : sttSupported();
+  $('mic').disabled = !ok;
+  $('mic').title = assistant.localStt ? 'Нажми, чтобы начать запись, и ещё раз — чтобы закончить (пробел)' : 'Говорить (пробел)';
+  if (!ok) $('status').textContent = assistant.localStt
+    ? 'Браузер не умеет записывать звук — пиши текстом.'
+    : 'Голосовой ввод в этом браузере недоступен — пиши текстом (голос работает в Chrome, Edge, Яндекс Браузере).';
 }
+
+async function loadConfig() {
+  const forced = params.get('stt');
+  if (forced) { applyStt(forced); return; }
+  try {
+    const url = new URL(assistant.apiUrl.replace(/\/api\/assistant(?:\?.*)?$/, '/api/config'), location.href);
+    const config = await (await fetch(url)).json();
+    applyStt(config.stt || 'local');
+  } catch {
+    applyStt('local');
+  }
+}
+loadConfig();
+
+// --- Панель «Мои записи» ---
+const KIND_LABEL = { task: 'Задача', meeting: 'Встреча', reminder: 'Напоминание' };
+const FREQ_LABEL = { daily: 'каждый день', weekly: 'каждую неделю', monthly: 'каждый месяц', yearly: 'каждый год' };
+let allItems = [];
+let kindFilter = 'all';
+
+function formatWhen(item) {
+  const at = item.start_at || item.due_at;
+  if (!at) return 'без срока';
+  if (at.length === 10) {  // только дата
+    const [y, m, d] = at.split('-');
+    return `${d}.${m}.${y}, время не указано`;
+  }
+  return new Date(at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function renderItems() {
+  const list = $('items');
+  const shown = kindFilter === 'all' ? allItems : allItems.filter(x => x.type === kindFilter);
+  $('itemsCount').textContent = allItems.length ? String(allItems.length) : '';
+  list.replaceChildren();
+  if (!shown.length) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = allItems.length ? 'В этой категории пусто' : 'Пока пусто — создай задачу голосом или текстом';
+    list.append(li);
+    return;
+  }
+  for (const item of shown) {
+    const li = document.createElement('li');
+    li.dataset.type = item.type;
+    if (item.status === 'done') li.classList.add('done');
+    const title = document.createElement('div');
+    title.className = 'title';
+    title.textContent = item.title;  // textContent: текст пользователя не исполняется как HTML
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const parts = [KIND_LABEL[item.type] || item.type, formatWhen(item)];
+    if (item.recurrence?.freq) parts.push(FREQ_LABEL[item.recurrence.freq] || 'повторяется');
+    if (item.status === 'done') parts.push('выполнено');
+    meta.textContent = parts.join(' · ');
+    li.append(title, meta);
+    list.append(li);
+  }
+}
+
+async function loadItems() {
+  try {
+    allItems = await assistant.items();
+    renderItems();
+  } catch (e) {
+    const li = document.createElement('li');
+    li.className = 'empty';
+    li.textContent = e.message;
+    $('items').replaceChildren(li);
+  }
+}
+
+$('tabs').onclick = e => {
+  const kind = e.target.dataset?.kind;
+  if (!kind) return;
+  kindFilter = kind;
+  for (const b of $('tabs').querySelectorAll('button')) b.setAttribute('aria-pressed', String(b === e.target));
+  renderItems();
+};
+loadItems();
 
 $('mic').onclick = () => assistant.listen();
 $('form').onsubmit = e => { e.preventDefault(); const t = $('text').value; $('text').value = ''; assistant.send(t); };

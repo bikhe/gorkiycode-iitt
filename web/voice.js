@@ -151,6 +151,17 @@ export class VoiceAssistant {
   _emit(name, ...args) { try { this.on[name]?.(...args); } catch (e) { console.error(e); } }
   _setState(state) { this.state = state; this._emit('state', state); }
 
+  /** Все сохранённые записи пользователя: GET /api/items → массив. */
+  async items() {
+    const url = new URL(this.apiUrl.replace(/\/api\/assistant(?:\?.*)?$/, '/api/items'), location.href);
+    url.searchParams.set('user_id', this.userId);
+    const headers = this.token ? { Authorization: `Bearer ${this.token}` } : {};
+    const res = await fetch(url, { headers });
+    if (res.status === 401) throw new Error('Войди, чтобы увидеть записи.');
+    if (!res.ok) throw new Error(`Не удалось загрузить записи: HTTP ${res.status}`);
+    return (await res.json()).items || [];
+  }
+
   newSession() {
     this.sessionId = uuid();
     try { localStorage.setItem('assistant.session', this.sessionId); } catch { /* ignore */ }

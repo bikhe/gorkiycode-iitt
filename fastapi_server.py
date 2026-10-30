@@ -5,7 +5,7 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from weakref import WeakValueDictionary
 
 from dotenv import load_dotenv
@@ -20,7 +20,8 @@ load_dotenv()
 
 import auth  # noqa: E402  (читает .env при импорте)
 from assistant_ai.factory import make_application  # noqa: E402
-from voice_stt import MAX_AUDIO, router as stt_router  # noqa: E402
+from voice_stt import MAX_AUDIO, preload as preload_stt, stt_provider  # noqa: E402
+from voice_stt import router as stt_router  # noqa: E402
 from voice_tts import make_tts, router as tts_router  # noqa: E402
 
 WEB_DIR = Path(__file__).with_name("web")
@@ -64,6 +65,10 @@ async def lifespan(api: FastAPI):
     )
     api.state.assistant = assistant
     api.state.tts = make_tts()
+    # Whisper грузится в фоне: сервер отвечает сразу, модель скачается,
+    # пока есть интернет, и дальше будет работать офлайн.
+    if stt_provider() == "local" and os.getenv("APP_STT_PRELOAD", "1") == "1":
+        Thread(target=preload_stt, name="stt-preload", daemon=True).start()
     cleaner = None
     if hasattr(assistant.crud, "cleanup"):
         cleaner = asyncio.create_task(periodic_cleanup(assistant.crud))
@@ -132,13 +137,46 @@ def health():
     }
 
 
+def _records_owner(request: Request, user_id: str | None) -> str:
+    """Чьи записи: со входом — из сессии, без входа — метка из запроса."""
+    if auth.auth_required():
+        return auth.records_owner(auth.require_user(request))
+    auth.check_origin(request)
+    return (user_id or "demo")[:100]
+
+
+ITEM_FIELDS = (
+    "id", "type", "title", "start_at", "due_at",
+    "duration_minutes", "recurrence", "status", "created_at",
+)
+MAX_ITEMS = 500
+
+
+@app.get("/api/items")
+def list_items(request: Request, user_id: str = "demo"):
+    """Все сохранённые записи пользователя для панели на странице.
+
+    Сначала записи с датой (по возрастанию), затем без даты.
+    """
+    owner = _records_owner(request, user_id)
+    repository = request.app.state.assistant.crud
+    with USER_LOCKS.get(owner):
+        rows = repository.list_items(owner, "0000-01-01", "9999-12-31")
+
+    def when(row):
+        at = row.get("start_at") or row.get("due_at")
+        return (at is None, at or "", row.get("id") or 0)
+
+    items = [
+        {key: row.get(key) for key in ITEM_FIELDS}
+        for row in sorted(rows, key=when)[:MAX_ITEMS]
+    ]
+    return jsonable_encoder({"items": items})
+
+
 @app.post("/api/assistant")
 def assistant_message(data: Message, request: Request):
-    if auth.auth_required():
-        user_id = auth.records_owner(auth.require_user(request))
-    else:
-        auth.check_origin(request)
-        user_id = (data.user_id or "demo")[:100]
+    user_id = _records_owner(request, data.user_id)
 
     text = data.text.strip()
 

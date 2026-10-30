@@ -147,7 +147,7 @@ class TTSEndpointTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        os.environ.update(APP_OFFLINE='1', APP_EMBEDDINGS='off', APP_AUTH_REQUIRED='1',
+        os.environ.update(APP_OFFLINE='1', APP_STT_PRELOAD='0', APP_EMBEDDINGS='off', APP_AUTH_REQUIRED='1',
                           APP_DB_PATH=str(Path(cls.tmp.name) / 'tts.sqlite3'))
         from fastapi.testclient import TestClient
         import fastapi_server
@@ -170,7 +170,9 @@ class TTSEndpointTests(unittest.TestCase):
     def test_disabled_by_default(self):
         self.app.state.tts = None
         self.assertEqual(self.client.post('/api/tts', json={'text': 'Привет'}).status_code, 404)
-        self.assertEqual(self.client.get('/api/config').json()['tts'], 'browser')
+        config = self.client.get('/api/config').json()
+        self.assertEqual(config['tts'], 'browser')
+        self.assertEqual(config['stt'], 'local')  # по умолчанию распознаёт сервер, без интернета
 
     def test_returns_audio(self):
         self.app.state.tts = FakeTTS()

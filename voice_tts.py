@@ -98,9 +98,15 @@ class SpeechRequest(BaseModel):
 
 @router.get("/config")
 def config():
-    """Что фронту включать: серверный TTS или браузерный."""
+    """Что фронту включать: серверные или браузерные TTS и STT."""
+    from voice_stt import stt_provider
+
     provider = os.getenv("APP_TTS_PROVIDER", "browser").strip().lower()
-    return {"tts": provider, "auth_required": auth.auth_required()}
+    return {
+        "tts": provider,
+        "stt": stt_provider(),
+        "auth_required": auth.auth_required(),
+    }
 
 
 @router.post("/tts")

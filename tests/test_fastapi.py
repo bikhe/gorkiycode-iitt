@@ -32,6 +32,7 @@ class ApiTests(unittest.TestCase):
         os.environ.update(
             APP_OFFLINE='1',
             APP_EMBEDDINGS='off',  # не грузить модель ради API-тестов
+            APP_STT_PRELOAD='0',  # и Whisper тоже
             APP_DB_PATH=str(Path(cls.tmp.name) / 'api.sqlite3'),
             APP_CORS_ORIGIN=ORIGIN,
             APP_AUTH_REQUIRED='1',
@@ -97,6 +98,22 @@ class ApiTests(unittest.TestCase):
         # user_id из тела игнорируется при включённом входе
         forged = self.say(bob, 'Что у меня завтра?', user_id='user:1').json()
         self.assertNotIn('Ивану', forged['display_text'])
+
+    def test_items_panel(self):
+        self.assertEqual(self.client.get('/api/items').status_code, 401)
+        owner, other = self.account('lister'), self.account('stranger')
+        self.assertEqual(owner.get('/api/items').json(), {'items': []})
+        self.say(owner, 'Напомни послезавтра в 09:00 оплатить интернет')
+        self.say(owner, 'Напомни завтра в 10:00 позвонить маме')
+        items = owner.get('/api/items').json()['items']
+        self.assertEqual([x['title'] for x in items], ['Позвонить маме', 'Оплатить интернет'])
+        self.assertEqual(items[0]['type'], 'reminder')
+        self.assertNotIn('user_id', items[0])
+        self.assertNotIn('deleted', items[0])
+        # чужие записи не видны, user_id из адреса игнорируется
+        self.assertEqual(other.get('/api/items', params={'user_id': 'user:1'}).json(), {'items': []})
+        evil = owner.get('/api/items', headers={'Origin': 'https://evil.example'})
+        self.assertEqual(evil.status_code, 403)
 
     def test_request_id_is_idempotent(self):
         client = self.account('idem')
@@ -316,6 +333,80 @@ class ServiceFixesTests(unittest.TestCase):
     def tearDown(self):
         if hasattr(self, 'repo'):
             self.repo.close()
+
+    def day_with_records(self):
+        from assistant_ai.rule_planner import RulePlanner
+        self.repo = SQLiteRepository(':memory:')
+        ai = AssistantAI(RulePlanner(), self.repo, now_func=lambda: NOW)
+        for phrase in ('Напомни завтра в 10:00 позвонить Ивану', 'Добавь встречу с Иваном завтра в 12:00',
+                       'Напомни завтра отчислить студента в 19:30', 'Поставь задачу купить билеты завтра',
+                       'Добавь встречу с командой завтра в 21:00'):
+            self.assertEqual(ai.handle_message(phrase)['status'], 'success', phrase)
+        return ai
+
+    def test_list_filtered_by_time_of_day(self):
+        ai = self.day_with_records()
+        cases = {
+            'Что у меня завтра после 19:30': ['Отчислить студента', 'Встреча с командой'],
+            'Что у меня завтра после 7 вечера': ['Отчислить студента', 'Встреча с командой'],
+            'Что у меня завтра с 10 до 12': ['Позвонить Ивану', 'Встреча с Иваном'],
+            'Что у меня завтра до 11:00': ['Позвонить Ивану'],
+            'Что у меня завтра вечером': ['Отчислить студента', 'Встреча с командой'],
+            'Какие планы на завтра утром': ['Позвонить Ивану'],
+            'Что у меня завтра после семи вечера': ['Отчислить студента', 'Встреча с командой'],
+            'Что у меня завтра с девяти до одиннадцати': ['Позвонить Ивану'],
+            'Что у меня завтра после обеда': ['Отчислить студента', 'Встреча с командой'],
+            'Что у меня завтра до обеда': ['Позвонить Ивану', 'Встреча с Иваном'],
+        }
+        for phrase, titles in cases.items():
+            result = ai.handle_message(phrase)
+            self.assertEqual([x['title'] for x in result['items']], titles, phrase)
+        # дата, а не время: «до 15 ноября» не фильтрует часы
+        self.assertEqual(len(ai.handle_message('Что у меня завтра до 15 ноября')['items']), 5)
+
+    def test_list_kind_only_when_user_names_it(self):
+        # GigaChat отвечает kind=task на «дела»: встречи и напоминания не должны пропасть
+        ai = self.day_with_records()
+        ai.planner = FakePlanner({
+            'Какие дела у меня завтра утром?': {'action': 'list', 'kind': 'task', 'temporal_text': 'завтра утром'},
+            'Какие задачи у меня завтра?': {'action': 'list', 'kind': 'task', 'temporal_text': 'завтра'},
+        })
+        dela = ai.handle_message('Какие дела у меня завтра утром?')
+        self.assertEqual([x['title'] for x in dela['items']], ['Позвонить Ивану'])
+        tasks = ai.handle_message('Какие задачи у меня завтра?')
+        self.assertEqual([x['title'] for x in tasks['items']], ['Купить билеты'])
+
+    def test_list_text_without_repeated_kind(self):
+        ai = self.day_with_records()
+        result = ai.handle_message('Что у меня завтра?')
+        self.assertIn('• 12:00 — Встреча с Иваном\n', result['display_text'] + '\n')
+        self.assertIn('Позвонить Ивану · напоминание', result['display_text'])
+        speech = result['speech_text']
+        self.assertNotIn('(', speech)
+        self.assertNotIn('•', speech)
+        self.assertIn('Завтра: задача: купить билеты; в 10:00 напоминание: позвонить Ивану; в 12:00 встреча с Иваном', speech)
+
+    def test_title_without_time_words_when_model_omits_title(self):
+        # Ответы GigaChat Lite без title: время и «у меня» не попадают в название.
+        ai = self.make({
+            'Напомни через два часа выпить таблетку':
+                {'action': 'create', 'kind': 'reminder', 'temporal_text': 'через два часа'},
+            'В четверг в 11 утра у меня встреча с дизайнером':
+                {'action': 'create', 'kind': 'meeting', 'temporal_text': 'в четверг в 11 утра'},
+        })
+        titles = [ai.handle_message(p)['item']['title'] for p in self.planner.mapping]
+        self.assertEqual(titles, ['Выпить таблетку', 'Встреча с дизайнером'])
+
+    def test_mark_done_when_model_puts_name_in_title(self):
+        ai = self.make({
+            'Поставь задачу купить билеты': {'action': 'create', 'kind': 'task', 'title': 'купить билеты'},
+            'Отметь задачу купить билеты выполненной':
+                {'action': 'update', 'kind': 'task', 'status': 'done', 'title': 'Купить билеты'},
+        })
+        ai.handle_message('Поставь задачу купить билеты')
+        result = ai.handle_message('Отметь задачу купить билеты выполненной')
+        self.assertEqual(result['status'], 'success', result['display_text'])
+        self.assertEqual(result['item']['status'], 'done')
 
     def test_undated_tasks_listed_for_today(self):
         ai = self.make({
