@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<title>Gorky AI — ассистент</title>
+<meta name="description" content="Голосовой ассистент Gorky AI: задачи, встречи и напоминания голосом или текстом.">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#1a181b">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geologica:wght@300..700&family=Pixelify+Sans:wght@400..700&display=swap">
+<link rel="stylesheet" href="/assets/base.css">
+<link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+<a class="skip-link" href="#text">Перейти к вводу фразы</a>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="g-mark" viewBox="0 0 16 16" shape-rendering="crispEdges"><g fill="currentColor"><rect x="5" y="3" width="7" height="2"/><rect x="3" y="5" width="2" height="6"/><rect x="5" y="11" width="6" height="2"/><rect x="8" y="7" width="5" height="2"/><rect x="11" y="9" width="2" height="2"/></g></symbol>
+</svg>
+
+<header class="topbar">
+  <a class="logo" href="/" title="На главную">
+    <span class="logo-mark"><svg aria-hidden="true"><use href="#g-mark"/></svg></span>
+    <span class="logo-name">Gorky AI</span>
+  </a>
+  <div class="topbar-tools">
+    <button class="btn-ghost icon-btn" id="speak" type="button" aria-pressed="true" title="Озвучивать ответы">
+      <svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#i-speaker-high"/></svg>
+      <span class="label">Озвучка</span>
+    </button>
+    <button class="btn-ghost icon-btn" id="reset" type="button" title="Начать новый диалог. Записи останутся">
+      <svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#i-arrow-counter-clockwise"/></svg>
+      <span class="label">Новый диалог</span>
+    </button>
+  </div>
+</header>
+
+<div class="views" role="tablist" aria-label="Разделы">
+  <button type="button" role="tab" id="tabChat" aria-controls="chatPane" aria-selected="true">Диалог</button>
+  <button type="button" role="tab" id="tabRecords" aria-controls="recordsPane" aria-selected="false">Записи <span class="count" id="tabCount"></span></button>
+</div>
+
+<main class="layout" id="main">
+  <!-- Диалог -->
+  <section class="chat" id="chatPane" role="tabpanel" aria-labelledby="tabChat">
+    <div class="log" id="log" aria-live="polite" aria-relevant="additions">
+      <div class="welcome" id="welcome">
+        <p class="prompt">$ ./gorky <b>--hello</b></p>
+        <h1 class="welcome-title">Что запланируем?</h1>
+        <p class="welcome-text">Нажмите на микрофон или пробел и скажите фразу своими словами. Можно и написать. Если данных не хватит, я переспрошу.</p>
+        <div class="examples" id="examples">
+          <div class="ex-group">
+            <p class="ex-title"><span class="type-dot" data-type="reminder" aria-hidden="true"></span>Создать</p>
+            <button type="button">Напомни мне завтра в 10 утра позвонить Ивану</button>
+            <button type="button">Добавь встречу с командой завтра в 15:00</button>
+            <button type="button">Поставь задачу купить билеты до конца недели</button>
+          </div>
+          <div class="ex-group">
+            <p class="ex-title"><span class="type-dot" data-type="task" aria-hidden="true"></span>Посмотреть</p>
+            <button type="button">Что у меня сегодня?</button>
+            <button type="button">Что запланировано на эту неделю?</button>
+          </div>
+          <div class="ex-group">
+            <p class="ex-title"><span class="type-dot" data-type="search" aria-hidden="true"></span>Найти</p>
+            <button type="button">Найди задачу про презентацию</button>
+            <button type="button">Когда у меня встреча с Иваном?</button>
+          </div>
+          <div class="ex-group">
+            <p class="ex-title"><span class="type-dot" data-type="meeting" aria-hidden="true"></span>Уточнение и контекст</p>
+            <button type="button">Поставь встречу с Иваном завтра</button>
+            <button type="button">Купить подарок маме в пятницу</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="quick" id="quick" hidden aria-label="Быстрые фразы">
+        <button type="button">Что у меня завтра?</button>
+        <button type="button">Что на этой неделе?</button>
+        <button type="button">Найди задачу про отчёт</button>
+        <button type="button">Отметь её выполненной</button>
+      </div>
+      <div class="px-panel composer" id="composer" data-state="idle">
+        <div class="recording" id="recording" aria-hidden="true">
+          <span class="rec-dot"></span>
+          <span class="rec-time" id="recTime">0:00</span>
+          <span class="meter" id="meter"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <span class="rec-hint">Enter или микрофон, чтобы отправить · Esc, чтобы отменить</span>
+        </div>
+        <form id="form" class="composer-form" autocomplete="off">
+          <label class="sr-only" for="text">Фраза для ассистента</label>
+          <textarea id="text" rows="1" maxlength="2000" placeholder="Скажите или напишите: что у меня завтра?" enterkeyhint="send"></textarea>
+          <button class="send" id="send" type="submit" aria-label="Отправить" hidden>
+            <svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#i-paper-plane-right"/></svg>
+          </button>
+          <button class="mic" id="mic" type="button" aria-label="Говорить" aria-keyshortcuts="Space">
+            <svg class="icon icon-lg mic-on" aria-hidden="true"><use href="/assets/icons.svg#i-microphone"/></svg>
+            <svg class="icon icon-lg mic-off" aria-hidden="true"><use href="/assets/icons.svg#i-stop"/></svg>
+          </button>
+        </form>
+      </div>
+      <p class="status" id="status" role="status"></p>
+    </div>
+  </section>
+
+  <!-- Записи -->
+  <aside class="records" id="recordsPane" role="tabpanel" aria-labelledby="tabRecords">
+    <div class="px-panel records-panel">
+      <div class="px-titlebar">
+        <h2 class="records-title">мои_записи</h2>
+        <span class="records-count" id="itemsCount" aria-label="Всего записей"></span>
+      </div>
+      <div class="records-tools">
+        <div class="filters" id="filters" role="group" aria-label="Тип записей">
+          <button type="button" class="btn-ghost" data-kind="all" aria-pressed="true">Все</button>
+          <button type="button" class="btn-ghost" data-kind="task" aria-pressed="false"><span class="type-dot" data-type="task" aria-hidden="true"></span>Задачи</button>
+          <button type="button" class="btn-ghost" data-kind="meeting" aria-pressed="false"><span class="type-dot" data-type="meeting" aria-hidden="true"></span>Встречи</button>
+          <button type="button" class="btn-ghost" data-kind="reminder" aria-pressed="false"><span class="type-dot" data-type="reminder" aria-hidden="true"></span>Напоминания</button>
+        </div>
+        <label class="filter-search">
+          <svg class="icon icon-sm" aria-hidden="true"><use href="/assets/icons.svg#i-magnifying-glass"/></svg>
+          <span class="sr-only">Фильтр по названию</span>
+          <input id="filterText" type="search" placeholder="Фильтр по названию">
+        </label>
+      </div>
+      <div class="items" id="items" aria-busy="true"></div>
+    </div>
+  </aside>
+</main>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script type="module" src="/assets/app.js"></script>
+</body>
+</html>

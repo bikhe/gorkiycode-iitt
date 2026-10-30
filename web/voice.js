@@ -4,7 +4,8 @@
  * Поток: микрофон -> SpeechRecognition -> normalizeTranscript -> POST /api/assistant
  *        -> display_text на экран, speech_text в speechSynthesis
  *        -> если ассистент уточняет (clarification / confirmation_required),
- *           после озвучки микрофон включается сам, ответ уходит в тот же session_id.
+ *           ответ пользователя (голосом или текстом) уходит в тот же session_id;
+ *           микрофон сам не включается (см. README, «Управление записью»).
  *
  * Без фреймворков, ES-модуль. UI подписывается на события через options.on.
  */
@@ -26,6 +27,21 @@ const STT_ERRORS = {
 };
 
 const FOLLOW_UP = new Set(['clarification', 'confirmation_required']);
+
+// Тот же сервер раздаёт страницу и API. Отдельный http.server на :5500 из README
+// ходит в FastAPI на 127.0.0.1:8765.
+export const defaultApiUrl = () =>
+  (typeof location !== 'undefined' && location.port === '5500')
+    ? 'http://127.0.0.1:8765/api/assistant'
+    : '/api/assistant';
+
+const STT_HTTP_ERRORS = {
+  400: 'Запись пустая. Нажмите на микрофон и скажите фразу.',
+  403: 'Страница открыта с адреса, который сервер не разрешает. Откройте её с того же адреса, что и API.',
+  413: 'Запись слишком длинная. Скажите фразу короче.',
+  415: 'Браузер записал звук в неподдерживаемом формате. Напишите фразу текстом.',
+  503: 'Распознавание речи на сервере недоступно. Напишите фразу текстом.',
+};
 
 /**
  * Мелкие правки того, как Chrome записывает речь.
@@ -123,16 +139,17 @@ export class VoiceAssistant {
   /**
    * @param {object} o
    * @param {string} [o.apiUrl]      адрес POST /api/assistant
-   * @param {string} [o.userId]      только для локального стенда; в Django берётся из сессии
+   * @param {string} [o.userId]      только при APP_AUTH_REQUIRED=0; со входом владелец берётся из сессии
    * @param {string} [o.sessionId]   один на диалог, иначе уточнения теряют контекст
-   * @param {string} [o.token]       Bearer, если на стенде задан APP_API_TOKEN
+   * @param {string} [o.token]       Bearer-токен из /api/login (не нужен, если вход выключен или есть cookie)
+   * @param {boolean} [o.serverTts]  озвучивать через POST /api/tts (config.tts === 'google')
    * @param {boolean} [o.speak]      озвучивать ответы
    * @param {boolean} [o.autoListen] после уточняющего вопроса сразу слушать ответ
    * @param {number} [o.timeoutMs]   ожидание ответа бэкенда (GigaChat бывает медленным)
    * @param {object} [o.on]          колбэки: state, interim, user, reply, error
    */
   constructor(o = {}) {
-    this.apiUrl = o.apiUrl || 'http://127.0.0.1:8765/api/assistant';
+    this.apiUrl = o.apiUrl || defaultApiUrl();
     this.userId = o.userId || 'demo';
     this.sessionId = o.sessionId || storage('assistant.session', uuid());
     this.token = o.token || '';
@@ -142,6 +159,9 @@ export class VoiceAssistant {
     this.timeoutMs = o.timeoutMs ?? 30000;
     this.on = o.on || {};
     this.localStt = o.localStt ?? false;
+    this.serverTts = o.serverTts ?? false;
+    this._audio = null;
+    this._discard = false;
     this.localRecorder = null;
     this.state = 'idle';
     this.recognition = null;
@@ -157,7 +177,7 @@ export class VoiceAssistant {
     url.searchParams.set('user_id', this.userId);
     const headers = this.token ? { Authorization: `Bearer ${this.token}` } : {};
     const res = await fetch(url, { headers });
-    if (res.status === 401) throw new Error('Войди, чтобы увидеть записи.');
+    if (res.status === 401) throw new Error('Сервер требует вход. Для демо выключите APP_AUTH_REQUIRED.');
     if (!res.ok) throw new Error(`Не удалось загрузить записи: HTTP ${res.status}`);
     return (await res.json()).items || [];
   }
@@ -213,10 +233,45 @@ export class VoiceAssistant {
 
 
   stop() {
+    this._discard = false;
     this.recognition?.stop();
 
     if (this.localRecorder?.state === 'recording') {
       this.localRecorder.stop();
+    }
+  }
+
+  /** Прервать запись без отправки. */
+  cancel() {
+    if (this.state !== 'listening') return;
+    this._discard = true;
+    this.recognition?.abort();
+    if (this.localRecorder?.state === 'recording') this.localRecorder.stop();
+    else this._setState('idle');
+  }
+
+  /** Уровень громкости 0…1 для индикатора записи (событие level). */
+  _meter(stream) {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return () => {};
+      const ctx = new Ctx();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      ctx.createMediaStreamSource(stream).connect(analyser);
+      const data = new Uint8Array(analyser.fftSize);
+      let raf = 0;
+      const tick = () => {
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (const v of data) { const x = (v - 128) / 128; sum += x * x; }
+        this._emit('level', Math.min(1, Math.sqrt(sum / data.length) * 4));
+        raf = requestAnimationFrame(tick);
+      };
+      tick();
+      return () => { cancelAnimationFrame(raf); ctx.close().catch(() => {}); this._emit('level', 0); };
+    } catch {
+      return () => {};
     }
   }
 
@@ -268,10 +323,14 @@ export class VoiceAssistant {
     }
 
     this.localRecorder = recorder;
+    this._discard = false;
 
     const chunks = [];
-    const closeMic = () =>
+    const stopMeter = this._meter(stream);
+    const closeMic = () => {
+      stopMeter();
       stream.getTracks().forEach(t => t.stop());
+    };
 
     recorder.ondataavailable = e => {
       if (e.data.size) chunks.push(e.data);
@@ -282,12 +341,13 @@ export class VoiceAssistant {
       this.localRecorder = null;
       closeMic();
 
-      if (!chunks.length) {
+      if (!chunks.length || this._discard) {
+        this._discard = false;
         this._setState('idle');
         return;
       }
 
-      this._setState('thinking');
+      this._setState('transcribing');
       this.busy = true;
 
       try {
@@ -324,7 +384,10 @@ export class VoiceAssistant {
           });
 
           if (!response.ok) {
-            throw new Error(`STT: HTTP ${response.status}`);
+            const err = new Error(STT_HTTP_ERRORS[response.status] ||
+              `Сервер не смог распознать речь (код ${response.status}). Напишите фразу текстом.`);
+            err.known = true;
+            throw err;
           }
 
           data = await response.json();
@@ -340,10 +403,13 @@ export class VoiceAssistant {
           this._emit('error', 'Речь не распознана. Повтори фразу.');
         }
 
-      } catch {
+      } catch (e) {
         this._emit(
           'error',
-          'Локальное распознавание недоступно. Проверь модель и Python.'
+          e.known ? e.message
+            : e.name === 'AbortError'
+              ? 'Распознавание заняло больше двух минут. Попробуйте фразу короче.'
+              : 'Сервер распознавания не отвечает. Проверьте, что FastAPI запущен, или напишите текстом.'
         );
       } finally {
         this.busy = false;
@@ -418,15 +484,16 @@ export class VoiceAssistant {
       const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
       try {
         const res = await fetch(this.apiUrl, { method: 'POST', headers, body, signal: ctrl.signal });
-        if (res.status === 403) throw new Error('Сервер отклонил запрос (CORS). Пропиши адрес этой страницы в APP_CORS_ORIGIN и перезапусти server.py.');
-        if (res.status === 401) throw new Error('Нужен токен APP_API_TOKEN.');
-        if (!res.ok) throw new Error(`Сервер ответил ${res.status}. Проверь результат в расписании.`);
+        if (res.status === 403) throw new Error('Сервер отклонил запрос с этого адреса. Добавьте адрес страницы в APP_CORS_ORIGIN и перезапустите FastAPI.');
+        if (res.status === 401) throw new Error('Сервер требует вход. Для демо выключите APP_AUTH_REQUIRED.');
+        if (res.status === 413) throw new Error('Сообщение слишком длинное. Сократите фразу.');
+        if (!res.ok) throw new Error(`Сервер ответил с ошибкой ${res.status}. Проверьте записи: действие могло выполниться.`);
         return await res.json();
       } catch (e) {
         const retryable = e.name === 'AbortError' || e instanceof TypeError;
         if (!retryable || attempt === 1) {
-          if (e.name === 'AbortError') throw new Error('Ассистент слишком долго отвечает. Проверь результат в расписании.');
-          if (e instanceof TypeError) throw new Error('Сервер ассистента не отвечает. Запущен ли server.py? Проверь результат в расписании.');
+          if (e.name === 'AbortError') throw new Error('Ассистент слишком долго отвечает. Проверьте записи: действие могло выполниться.');
+          if (e instanceof TypeError) throw new Error('Сервер ассистента не отвечает. Проверьте, что FastAPI запущен, и посмотрите записи.');
           throw e;
         }
       } finally {
@@ -441,6 +508,8 @@ export class VoiceAssistant {
   async speak(text) {
     const phrase = String(text || '').trim();
     if (!phrase) return;
+
+    if (this.serverTts && await this._speakServer(phrase)) return;
 
     if (!ttsSupported() ||
         typeof SpeechSynthesisUtterance === 'undefined') {
@@ -507,5 +576,33 @@ export class VoiceAssistant {
   }
 
 
-  stopSpeaking() { if (ttsSupported()) speechSynthesis.cancel(); }
+  /** Серверная озвучка (POST /api/tts). false — озвучить браузером. */
+  async _speakServer(phrase) {
+    try {
+      const url = this.apiUrl.replace(/\/api\/assistant(?:\?.*)?$/, '/api/tts');
+      const headers = { 'Content-Type': 'application/json' };
+      if (this.token) headers.Authorization = `Bearer ${this.token}`;
+      const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ text: phrase.slice(0, 1000) }) });
+      if (!res.ok) { console.warn('TTS сервера:', res.status); return false; }
+      const src = URL.createObjectURL(await res.blob());
+      const audio = new Audio(src);
+      this._audio = audio;
+      this._setState('speaking');
+      await new Promise(resolve => {
+        audio.onended = audio.onerror = audio.onpause = resolve;
+        audio.play().catch(resolve);
+      });
+      URL.revokeObjectURL(src);
+      this._audio = null;
+      return true;
+    } catch (e) {
+      console.warn('TTS сервера:', e);
+      return false;
+    }
+  }
+
+  stopSpeaking() {
+    if (this._audio) { this._audio.pause(); this._audio = null; }
+    if (ttsSupported()) speechSynthesis.cancel();
+  }
 }
