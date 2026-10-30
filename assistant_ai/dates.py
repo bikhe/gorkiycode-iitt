@@ -6,6 +6,15 @@ from datetime import datetime, date, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 from dateutil.relativedelta import relativedelta
 
+
+def _day_hour(hour):
+    """«10 часов дня» — это 10:00, «3 часа дня» — 15:00, «12 дня» — полдень."""
+    if hour == 0:
+        return 12  # «пол первого дня» приходит как 0 часов
+    if 1 <= hour <= 8:
+        return hour + 12
+    return hour
+
 class DateError(ValueError):
     pass
 
@@ -78,7 +87,9 @@ class DateResolver:
                 return re.fullmatch(r'\s*(?:в\s+)?'+pattern+r'\s*[.!?]?\s*',s)
             return re.search(r'\b'+pattern+r'\b',s)
         def daypart(hour,p):
-            if p in ('вечера','дня'):
+            if p == 'дня':
+                return _day_hour(hour)
+            if p == 'вечера':
                 return hour+12 if hour<12 else hour
             if p == 'ночи':
                 # Conversational: «пол одиннадцатого ночи» is late
@@ -123,7 +134,9 @@ class DateResolver:
                 raise DateError('Уточни, это утром или вечером?')
             if hour>12 and p in ('утра','ночи'):
                 raise DateError('Часы и часть суток противоречат друг другу.')
-            if p in ('вечера','дня'):
+            if p == 'дня':
+                hour=_day_hour(hour)
+            elif p == 'вечера':
                 hour=hour%12+12 if hour<=12 else hour
             elif p == 'ночи':
                 hour=hour+12 if hour in (8,9,10,11) else hour%12
@@ -167,7 +180,8 @@ class DateResolver:
         if h>23 or minute>59:raise DateError("Некорректное время: используй часы 0–23 и минуты 0–59.")
         if part:
             if h>12 and part in ("утра","ночи"):raise DateError("Время и часть суток противоречат друг другу.")
-            if part in ("дня","вечера"):h=h%12+12 if h<=12 else h
+            if part=="дня":h=_day_hour(h)
+            elif part=="вечера":h=h%12+12 if h<=12 else h
             else:
                 if part=="ночи":
                     h=h+12 if h in (8,9,10,11) else h%12

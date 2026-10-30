@@ -25,6 +25,10 @@ class UserInputError(ValueError):
     pass
 
 
+class ClarifyKind(Exception):
+    """Запрос понятен, кроме типа записи; ответ пользователя его достроит."""
+
+
 class AmbiguousTarget(UserInputError):
     def __init__(self, rows):
         self.rows = rows[:5]
@@ -79,6 +83,42 @@ def _kind_from_text(text):
         return 'task'
 
     return None
+
+
+_MONTHS = (
+    r'январ\w*|феврал\w*|март\w*|апрел\w*|мая|мае|июн\w*|июл\w*|'
+    r'август\w*|сентябр\w*|октябр\w*|ноябр\w*|декабр\w*'
+)
+_WEEKDAYS = (
+    r'понедельн\w*|вторник\w*|сред[ауы]|четверг\w*|'
+    r'пятниц\w*|суббот\w*|воскресен\w*'
+)
+
+
+def _strip_temporal(text):
+    """Убирает из названия слова о времени: «встреча с Иваном завтра
+    в 10 часов дня» → «встреча с иваном». Дату и час проверяют отдельно."""
+    s = norm(text or '')
+    patterns = (
+        r'\b(?:котор\w+|что|чтобы)\s+(?:должн\w+\s+)?(?:быть|будет|был\w*|стоит)\b',
+        r'\b(?:на|в|во|к|до)?\s*(?:сегодня|завтра|послезавтра)\b',
+        # «в среду», но не «задачу про среду обитания».
+        r'\b(?:на|в|во)\s+(?:(?:эт\w+|следующ\w+)\s+)?(?:' + _WEEKDAYS + r')\b',
+        r'\b(?:на|в)?\s*(?:эт\w+|следующ\w+)\s+недел\w*',
+        r'\b(?:на|в|к)?\s*\d{1,2}\s+(?:' + _MONTHS + r')\b',
+        r'\b(?:на|в|к)?\s*\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?\b',
+        r'\b(?:в|на|к)\s+\d{1,2}(?:[:.]\d{2})?(?:\s+час\w*)?'
+        r'(?:\s+(?:утра|дня|вечера|ночи))?\b',
+        r'\b(?:в|на|к)\s+(?:один|два|три|четыре|пять|шесть|семь|восемь|'
+        r'девять|десять|одиннадцать|двенадцать)\s+час\w*'
+        r'(?:\s+(?:утра|дня|вечера|ночи))?\b',
+        r'\b(?:утром|вечером|днем|днём|ночью)\b',
+    )
+    for pattern in patterns:
+        s = re.sub(pattern, ' ', s)
+    # Предлог, от которого отрезали дату: «перенеси на (послезавтра)».
+    s = re.sub(r'(?:^|\s)(?:на|в|во|к|до)\s*$', ' ', s)
+    return re.sub(r'\s+', ' ', s).strip(' ,.;:-')
 
 
 def _fallback_title(text, kind):
@@ -738,7 +778,8 @@ class AssistantAI:
             return _response(
                 'clarification',
                 'На какую дату поставить запись?',
-                'create'
+                'create',
+                suggestions=['Сегодня', 'Завтра', 'Послезавтра']
             )
 
         if kind == 'meeting' and 'T' not in at:
@@ -748,7 +789,8 @@ class AssistantAI:
             return _response(
                 'clarification',
                 'На какое время назначить встречу?',
-                'create'
+                'create',
+                suggestions=['В 10:00', 'В 15:00', 'В 18:00']
             )
 
         if not at and p.get('date_required'):
@@ -954,7 +996,62 @@ class AssistantAI:
         )[0]
         reference = re.sub(r'\s+(?:сегодня|завтра|послезавтра)$',
                            '', reference).strip(' ,.;:')
-        return reference
+        return _strip_temporal(reference)
+
+    def _clock_of(self, user, item_id):
+        row = self.crud.get_item(user, item_id)
+        value = (row.get('start_at') or row.get('due_at')) if row else None
+        if not value or 'T' not in value:
+            return None
+        moment = datetime.fromisoformat(value).astimezone(self.zone)
+        return moment.hour, moment.minute
+
+    def _search(self, user, plan, text, now):
+        """Поиск по названию с учётом дня и часа из той же фразы.
+
+        «Встреча с Иваном завтра в 10 часов дня» ищет «Иван» среди встреч
+        на завтра в 10:00, а не все записи со словом «завтра».
+        """
+        raw = plan.get('query') if isinstance(plan.get('query'), str) else ''
+        query = _strip_temporal(raw or text) or _strip_temporal(text)
+        try:
+            period = self.cal.interval(text, now)
+        except DateError:
+            period = None
+        try:
+            clocks = {self.cal.clock(text)} - {None}
+        except DateError:
+            hour = self._hour_hint(text)
+            clocks = {(hour % 12, 0), (hour % 12 + 12, 0)} if hour else set()
+
+        rows = self.crud.search_items(user, query) if query else []
+        kind = _kind_from_text(text)
+        if kind and any(x['type'] == kind for x in rows):
+            rows = [x for x in rows if x['type'] == kind]
+
+        when = ''
+        if period:
+            begin = datetime.combine(period[0], time.min, self.zone)
+            finish = datetime.combine(period[1], time.max, self.zone)
+            kept = []
+            for row in rows:
+                hits = _occurrences(row, begin, finish, self.zone)
+                if clocks:
+                    hits = [x for x in hits
+                            if (x.hour, x.minute) in clocks
+                            and 'T' in (row.get('start_at') or row.get('due_at') or '')]
+                if hits:
+                    kept.append(row)
+            rows = kept
+            when = (
+                f'на {period[0].strftime("%d.%m")}'
+                if period[0] == period[1]
+                else f'с {period[0].strftime("%d.%m")} по {period[1].strftime("%d.%m")}'
+            )
+            if clocks:
+                first = min(clocks)
+                when += f' в {first[0]:02d}:{first[1]:02d}'
+        return rows, query, when
 
     @staticmethod
     def _is_generic_reference(reference):
@@ -1009,13 +1106,17 @@ class AssistantAI:
         on_day = None
         on_day_ids = None
         if action == 'delete':
+            loose_hour = None
             try:
                 on_day = self.cal.point(
                     text, now,
                     favorite_month=state.get('favorite_month')
                 )
             except DateError:
-                on_day = None
+                # «Завтра в 10 часов» для существующей записи: день известен,
+                # а 10:00 или 22:00 — решит то, что есть в календаре.
+                on_day = self._recover_day(text, now)
+                loose_hour = self._hour_hint(text) if on_day else None
             if on_day:
                 day = date.fromisoformat(on_day[:10])
                 begin = datetime.combine(day, time.min, self.zone)
@@ -1033,6 +1134,12 @@ class AssistantAI:
                     target_clock = self.cal.clock(text)
                 except DateError:
                     target_clock = None
+                if target_clock is None and loose_hour is not None:
+                    clocks = {(loose_hour % 12, 0), (loose_hour % 12 + 12, 0)}
+                    on_day_ids = {
+                        item_id for item_id in on_day_ids
+                        if self._clock_of(user, item_id) in clocks
+                    }
                 if target_clock is not None:
                     matching_time_ids = set()
                     for item_id in on_day_ids:
@@ -1093,7 +1200,10 @@ class AssistantAI:
             'эту задачу', 'последнюю задачу',
             'это напоминание', 'последнее напоминание'
         }
-        if from_text in pronouns or (not from_text and reference in pronouns):
+        # Голое «удали» или «перенеси на послезавтра» — про последнюю запись
+        # из разговора, если назвать её было нечем.
+        bare = not from_text and (not reference or reference in pronouns)
+        if from_text in pronouns or bare:
             last = state.get('last_item_id')
             row = self.crud.get_item(user, last) if last else None
             if row and (not explicit_kind or row['type'] == explicit_kind):
@@ -1267,19 +1377,28 @@ class AssistantAI:
         s = norm(text)
 
         if not re.match(
-            r'^(?:удали|удалить|убери|очисти)\s+(?:все|всё)\b',
+            r'^(?:удали|удалить|убери|очисти|очистить|сотри)\s+'
+            r'(?:(?:все|всё|весь|всю)\b(?!\s+(?:серию|повторения))|'
+            r'(?:список|календарь|расписание|записи)\b)',
             s
         ):
             return None
 
+        safe_way = _response(
+            'clarification',
+            'Удалить сразу всё не могу: так легко потерять нужное. '
+            'Могу удалить все записи за один день, например '
+            '«удали все записи на завтра». Ничего не удалено.',
+            'delete',
+            suggestions=[
+                'Удали все записи на сегодня',
+                'Удали все записи на завтра',
+            ]
+        )
+
         # Не угадываем дату и не выбираем последнюю запись.
         if re.search(r'\b(?:до|после|перед)\b', s):
-            return _response(
-                'clarification',
-                'Укажи один конкретный день, например '
-                '«удали все записи на завтра». Ничего не удалено.',
-                'delete'
-            )
+            return safe_way
 
         try:
             period = self.cal.interval(text, now)
@@ -1287,12 +1406,7 @@ class AssistantAI:
             period = None
 
         if not period or period[0] != period[1]:
-            return _response(
-                'clarification',
-                'Для массового удаления укажи один конкретный день: '
-                '«удали все записи на завтра». Ничего не удалено.',
-                'delete'
-            )
+            return safe_way
 
         day = period[0].isoformat()
         kind = _kind_from_text(text)
@@ -1461,6 +1575,25 @@ class AssistantAI:
                 'Хорошо, действие отменено.'
             )
 
+        if p.get('need') == 'kind':
+            kind = _kind_from_text(text)
+            if kind is None:
+                kind = {
+                    'встреча': 'meeting', 'встречу': 'meeting',
+                    'напоминание': 'reminder', 'напомни': 'reminder',
+                    'задача': 'task', 'задачу': 'task', 'дело': 'task',
+                }.get(s)
+            state['pending'] = None
+            if kind is None:
+                # Не ответ на вопрос, а новая фраза: обрабатываем её заново.
+                return None
+            state['_replay'] = {
+                'plan': {**p['plan'], 'kind': kind},
+                'text': p['original_text'],
+                'kind': kind,
+            }
+            return None
+
         if p.get('need') == 'choose_target':
             if re.match(
                 r'^(?:поставь|создай|найди|покажи|'
@@ -1505,7 +1638,10 @@ class AssistantAI:
                     'clarification',
                     f"Выбери номер от 1 до {len(p['target_ids'])} "
                     "или скажи «отмена».",
-                    p['action']
+                    p['action'],
+                    suggestions=[
+                        str(i + 1) for i in range(len(p['target_ids']))
+                    ]
                 )
 
             row = self.crud.get_item(
@@ -1714,7 +1850,8 @@ class AssistantAI:
                 return _response(
                     'clarification',
                     f"{p['hour_hint']:02d}:00 утра или вечера?",
-                    'create'
+                    'create',
+                    suggestions=['Утра', 'Вечера']
                 )
 
             if p.get('daypart_hint'):
@@ -1830,14 +1967,16 @@ class AssistantAI:
                 return _response(
                     'clarification',
                     f"Уточни, {p['hour_hint']:02d}:00 утра или вечера?",
-                    'create'
+                    'create',
+                    suggestions=['Утра', 'Вечера']
                 )
 
         elif not p.get('at'):
             return _response(
                 'clarification',
                 'На какую дату поставить запись?',
-                'create'
+                'create',
+                suggestions=['Сегодня', 'Завтра', 'Послезавтра']
             )
 
         return self._commit_create(
@@ -1855,6 +1994,8 @@ class AssistantAI:
                 'error',
                 'Напиши сообщение.'
             )
+
+        said = text
 
         if len(text) > 2000:
             return _response(
@@ -1890,8 +2031,10 @@ class AssistantAI:
                     state, text, answer
                 )
 
+            replay = state.pop('_replay', None)
+
             # Перехватываем массовое удаление до LLM.
-            bulk = self._bulk_delete_request(
+            bulk = None if replay else self._bulk_delete_request(
                 user_id, state, text, now
             )
             if bulk is not None:
@@ -1900,7 +2043,7 @@ class AssistantAI:
                     state, text, bulk
                 )
 
-            correction = self._implicit_time_correction(
+            correction = None if replay else self._implicit_time_correction(
                 user_id, state, text, now
             )
 
@@ -1917,7 +2060,7 @@ class AssistantAI:
                 norm(text)
             )
 
-            if pref:
+            if pref and not replay:
                 month = month_from_text(
                     pref[1]
                 )
@@ -1959,16 +2102,22 @@ class AssistantAI:
                 )[:100]
             ]
 
-            plan = self.planner.plan(
-                text,
-                {
-                    'last_item_id': state['last_item_id'],
-                    'pending': None,
-                    'history': state['history']
-                },
-                now,
-                catalog
-            )
+            if replay:
+                # Ответ на «задача, встреча или напоминание?»: повторяем
+                # исходный запрос с известным типом, без нового вызова LLM.
+                plan = replay['plan']
+                text = replay['text']
+            else:
+                plan = self.planner.plan(
+                    text,
+                    {
+                        'last_item_id': state['last_item_id'],
+                        'pending': None,
+                        'history': state['history']
+                    },
+                    now,
+                    catalog
+                )
 
             if not isinstance(plan, dict):
                 raise UserInputError(
@@ -2037,16 +2186,39 @@ class AssistantAI:
 
             elif action == 'create':
                 kind = (
-                    _kind_from_text(text)
+                    (replay or {}).get('kind')
+                    or _kind_from_text(text)
                     or plan.get('kind')
                 )
+
+                # Модель любит называть встречей любое дело с датой:
+                # «Купить подарок маме в пятницу» — это задача.
+                if (
+                    kind == 'meeting'
+                    and not replay
+                    and not _kind_from_text(text)
+                    and not re.search(
+                        r'\b(?:совещан|планерк|собеседован|переговор|'
+                        r'конференц|стендап|митинг|созвон|звонок\s+с|'
+                        r'свидан|приём|прием|встрет)\w*',
+                        s
+                    )
+                    and not re.search(r'\bс\s+[А-ЯЁA-Z]', text)
+                ):
+                    kind = 'task'
 
                 if kind not in {
                     'task', 'meeting', 'reminder'
                 }:
-                    raise UserInputError(
-                        'Уточни: задача, встреча или напоминание?'
-                    )
+                    # Запоминаем запрос целиком: ответ «задача» достроит его
+                    # без повторного обращения к модели.
+                    state['pending'] = {
+                        'action': 'create',
+                        'need': 'kind',
+                        'plan': plan,
+                        'original_text': text,
+                    }
+                    raise ClarifyKind()
 
                 title = plan.get('title')
 
@@ -2205,10 +2377,19 @@ class AssistantAI:
                     else:
                         message = str(e)
 
+                    suggestions = None
+                    if day_hint and hour_hint is not None:
+                        suggestions = ['Утра', 'Вечера']
+                    elif day_hint and kind == 'meeting':
+                        suggestions = ['В 10:00', 'В 15:00', 'В 18:00']
+                    elif need == 'date':
+                        suggestions = ['Сегодня', 'Завтра', 'Послезавтра']
+
                     result = _response(
                         'clarification',
                         message,
-                        'create'
+                        'create',
+                        suggestions=suggestions
                     )
 
                 else:
@@ -2387,9 +2568,8 @@ class AssistantAI:
                 )
 
             elif action == 'search':
-                rows = self.crud.search_items(
-                    user_id,
-                    plan.get('query') or text
+                rows, query, when = self._search(
+                    user_id, plan, text, now
                 )
 
                 state['last_item_id'] = (
@@ -2398,13 +2578,29 @@ class AssistantAI:
                     else None
                 )
 
-                result = _response(
-                    'success',
-                    self._describe_list(rows),
-                    'search',
-                    items=rows,
-                    speech_text=self._speak_list(rows)
-                )
+                if rows:
+                    result = _response(
+                        'success',
+                        self._describe_list(rows),
+                        'search',
+                        items=rows,
+                        speech_text=self._speak_list(rows)
+                    )
+                else:
+                    shown = query or norm(text)
+                    message = (
+                        f'Не нашла записей по запросу «{shown}»'
+                        + (f' {when}' if when else '')
+                        + '. Попробуй другое слово из названия '
+                        'или посмотри список на неделю.'
+                    )
+                    result = _response(
+                        'success',
+                        message,
+                        'search',
+                        items=[],
+                        suggestions=['Что на этой неделе?', 'Что у меня завтра?']
+                    )
 
             elif action in ('update', 'delete'):
                 row = self._resolve_target(
@@ -2445,6 +2641,8 @@ class AssistantAI:
                                 else 'single'
                             )
                         }
+                        # После «нет» голое «удали» вернётся к этой записи.
+                        state['last_item_id'] = row['id']
 
                         label = (
                             'ВСЮ СЕРИЮ '
@@ -2498,6 +2696,14 @@ class AssistantAI:
                     'unknown'
                 )
 
+        except ClarifyKind:
+            result = _response(
+                'clarification',
+                'Что это: задача, встреча или напоминание?',
+                'create',
+                suggestions=['Задача', 'Встреча', 'Напоминание']
+            )
+
         except AmbiguousTarget as exc:
             state['pending'] = {
                 'need': 'choose_target',
@@ -2521,7 +2727,8 @@ class AssistantAI:
                 + choices
                 + '. Назови номер нужной. '
                 'Ничего не изменено.',
-                action
+                action,
+                suggestions=[str(i + 1) for i in range(len(exc.rows))]
             )
 
         except (
@@ -2552,7 +2759,7 @@ class AssistantAI:
             user_id,
             session_id,
             state,
-            text,
+            said,
             result
         )
 
@@ -2584,7 +2791,9 @@ class AssistantAI:
 
         def minutes(h, m, part):
             h, m = int(h), int(m or 0)
-            if part in ('дня', 'вечера') and h < 12:
+            if part == 'дня' and 1 <= h <= 8:
+                h += 12
+            if part == 'вечера' and h < 12:
                 h += 12
             if part == 'ночи' and h == 12:
                 h = 0
@@ -2606,6 +2815,18 @@ class AssistantAI:
             if start is not None:
                 return start, 24 * 60, f'после {label(start)}'
             return 0, end + 1, f'до {label(end)}'
+
+        # «Что у меня завтра в 10:00?» — записи ровно на этот час.
+        m = re.search(
+            r'\b(?:в|на|к)\s+(\d{1,2})(?:[:.](\d{2}))?(?:\s+час\w*)?'
+            r'(?:\s+(утра|дня|вечера|ночи))?\b' + not_date
+            + r'(?!\s+(?:дн(?:я|ей)|недел\w*|месяц\w*))',
+            s
+        )
+        if m and (m[2] or m[3] or re.search(r'\bчас', m[0])):
+            at = minutes(*m.groups())
+            if at is not None:
+                return at, at + 1, f'в {label(at)}'
 
         parts = (
             (r'\bдо\s+обеда\b', 0, 13 * 60, 'до обеда'),
